@@ -8,6 +8,7 @@
   4. 승인되면 결제 정산(settle)이 이루어지고, 진짜 Gemini API를 호출해 결과를 돌려줌
 """
 
+import json
 import logging
 import os
 import uuid
@@ -209,18 +210,64 @@ async def call_policy_engine(request: Request, prompt: str, task_plan: str | Non
 # ---------------------------------------------------------------------------
 # 실제 Gemini API 호출
 # ---------------------------------------------------------------------------
-async def call_gemini_api(prompt: str) -> dict:
+_CHAIN_SYSTEM_INSTRUCTION = """너는 자율 에이전트 체인의 한 단계를 처리하는 실행기다.
+
+작업 계획: "{task_plan}"
+사용자 요청: "{prompt}"
+
+위 요청에 실제로 답하라. 그리고 이 답변으로 작업 계획 전체가 실질적으로 완료됐는지 판단하라.
+
+- answer: 사용자에게 보여줄 실제 답변
+- task_complete: 계획의 모든 단계가 충족됐으면 true. 완료 여부가 조금이라도 애매하면
+  true로 판단하라 — 추가로 이어서 호출하면 실제 비용(USDC 결제)이 발생하므로,
+  불필요하게 이어가는 것보다 여기서 멈추는 편이 훨씬 안전하다.
+- next_prompt: task_complete가 false일 때만, 다음 단계에 그대로 사용할 완전한 프롬프트를
+  작성하라. task_complete가 true면 빈 문자열로 둬라.
+"""
+
+_CHAIN_RESPONSE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "answer": {"type": "STRING"},
+        "task_complete": {"type": "BOOLEAN"},
+        "next_prompt": {"type": "STRING"},
+    },
+    "required": ["answer", "task_complete"],
+}
+
+
+async def call_gemini_api(prompt: str, task_plan: str | None) -> dict:
     if not GEMINI_API_KEY:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY가 설정되지 않았습니다")
+
+    contents_text = _CHAIN_SYSTEM_INSTRUCTION.format(task_plan=task_plan or "(없음)", prompt=prompt)
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         f"gemini-3.5-flash:generateContent?key={GEMINI_API_KEY}"
     )
+    body = {
+        "contents": [{"parts": [{"text": contents_text}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": _CHAIN_RESPONSE_SCHEMA,
+        },
+    }
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]})
+        resp = await client.post(url, json=body)
         resp.raise_for_status()
         return resp.json()
+
+
+def _extract_chain_result(gemini_result: dict) -> dict:
+    """Gemini의 구조화된 JSON 응답(answer/task_complete/next_prompt)을 꺼낸다."""
+    text = gemini_result["candidates"][0]["content"]["parts"][0]["text"]
+    parsed = json.loads(text)
+    return {
+        "answer": parsed.get("answer", ""),
+        "task_complete": bool(parsed.get("task_complete", True)),
+        "next_prompt": parsed.get("next_prompt") or None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -236,11 +283,15 @@ async def call_gemini(payload: GeminiRequestIn, request: Request) -> dict:
             detail=decision.get("reason", "정책 엔진이 이 결제를 거부했습니다"),
         )
 
-    gemini_result = await call_gemini_api(payload.prompt)
+    gemini_result = await call_gemini_api(payload.prompt, payload.task_plan)
+    chain_result = _extract_chain_result(gemini_result)
 
     return {
         "approved": True,
         "policy_decision": decision,
+        "answer": chain_result["answer"],
+        "task_complete": chain_result["task_complete"],
+        "next_prompt": chain_result["next_prompt"],
         "gemini_response": gemini_result,
     }
 

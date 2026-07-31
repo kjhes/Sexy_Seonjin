@@ -168,6 +168,9 @@ class SemanticGuard:
             # 순서대로 이어붙여서 하나의 텍스트로 만든다.
             contents=f'{_SYSTEM_PROMPT}\n\n사용자 요청: "{user_prompt}"{plan_block}',
             config={
+                # temperature=0: 판단이 매번 흔들리지 않도록 무작위성을 최소화한다.
+                # (결제 승인/거부처럼 같은 입력엔 같은 결론이 나와야 하는 판단에서 특히 중요)
+                "temperature": 0,
                 # 응답을 JSON 형식으로 달라고 요청
                 "response_mime_type": "application/json",
                 # 위에서 만든 SemanticVerdict 틀에 맞춰서 답하라고 강제 (필드 5개, 타입까지 고정)
