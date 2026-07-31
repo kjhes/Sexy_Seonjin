@@ -126,6 +126,27 @@ Day1에 이 연결고리(정책규칙 전달, JSON 포맷 합의) 안 끝나면 
 - 따라서 **레이어2를 최종 방어선으로 취급하면 안 됨** — 실제 금전적 피해 상한은 항상 레이어1의 하드 규칙(`per_tx_limit`, `daily_limit`)이 결정함. 피칭/데모 설명 시에도 "레이어2는 best-effort 정밀 판단, 레이어1이 hard cap"으로 정직하게 설명할 것
 - 사용자의 **최초 작업 요청 자체**는 검사 대상이 아님(스코프의 정의 기준점 자체라 자기 자신과 비교하는 셈이라 논리적으로 불필요) — 검사 대상은 그 이후 체인에서 AI가 만들어내는 개별 호출들
 
+## 백엔드 통합 (main.py를 백엔드 친구가 실제 구현으로 교체함)
+백엔드 친구가 GitHub에 실제 x402 결제 서버를 push하면서 `main.py`를 통째로 교체함
+(원래 `main.py`에 있던 내 `/evaluate` 서버는 사라짐). 확인 결과:
+- 백엔드의 새 `main.py`: x402 결제 미들웨어(`POST /api/gemini`, 포트 3000), 결제 트랜잭션에서
+  실제 서명 지갑 주소 추출, Solana Devnet RPC로 온체인 USDC 잔액 조회, 그 값들을 채워서
+  `POLICY_ENGINE_URL`(`.env`, 기본 `http://localhost:8000`)의 `/evaluate`를 호출 → 승인되면
+  실제 Gemini API 호출까지 수행
+- **`main.py`가 백엔드 파일이 됐으므로, 내 정책 판단 서버는 `policy_server.py`로 분리해서 새로 만듦**
+  (`policy_engine.py` + `semantic_layer.py`를 그대로 사용, 로직 변경 없음). 포트 8000, `main.py`와는 별도 프로세스로 실행
+- `requirements.txt`도 백엔드가 자기 의존성(x402, solana, httpx, python-dotenv)으로 덮어써서,
+  내 쪽 의존성(`pydantic`, `google-genai`) 다시 추가함
+- **공식 결제대상 주소 TODO 해결(gemini만)**: `.env`의 실제 `SOLANA_WALLET_ADDRESS`
+  (`8g5cuUvBFu6rExjJfiC2KoCNXKo8BJ3MoeJUvoHbUXU4`, Devnet)를 `policy_server.py`가 그대로 읽어와서
+  `official_recipient_addresses["gemini"]`에 사용. `main.py`와 같은 `.env`를 공유하므로 항상 동기화됨.
+  BigQuery는 아직 라우트 자체가 없어서 주소도 비워둔 상태
+- 백엔드가 `/evaluate`로 보내는 필드가 [BACKEND_연동_가이드.md](BACKEND_연동_가이드.md)에서 정리한
+  필드명과 **정확히 일치**함 (wallet_connected/wallet_balance를 placeholder 없이 실제 온체인 값으로 채움 등) — 별도 조율 없이 잘 맞음
+- 로컬에서 `policy_server.py` 단독 실행 후 `/evaluate` 실제 호출 테스트 완료: 공식 주소 불일치 시 거부,
+  일치 시 승인 둘 다 확인함. `main.py`(x402 + 실제 결제 + 실제 Gemini 호출)까지 엮은 end-to-end는 아직 미검증
+- `README.md`를 "서버 두 개(터미널 두 개)" 실행 구조로 갱신
+
 ## 현재까지 진행 상황
 - ✅ 정책 판단 엔진 레이어1 완성 (`policy_engine.py`)
   - `PolicyConfig`: 정책 숫자 설정 (일일한도, 건당한도, 허용카테고리, 최대호출횟수, 분당호출한도, AI연속실패한도, 공식 결제대상 주소)
@@ -146,12 +167,12 @@ Day1에 이 연결고리(정책규칙 전달, JSON 포맷 합의) 안 끝나면 
 
 ## 다음 할 일
 - [x] 정보보안 친구 실제 정책 스펙 받아서 `PolicyConfig` 값(한도 숫자, 허용카테고리) 교체 완료
-- [ ] 공식 결제대상 주소(Gemini/BigQuery 실제 Solana 지갑 주소 문자열) 받아서 `main.py`의 TODO 플레이스홀더 교체 — 아직 못 받음
-- [x] 백엔드 친구와 연동 방식 확정: REST API로 감쌀지, 함수 직접 import해서 쓸지 → REST API(FastAPI, POST /evaluate)로 확정, main.py 구현 완료
+- [x] 공식 결제대상 주소 — Gemini는 `.env`의 `SOLANA_WALLET_ADDRESS`로 해결. BigQuery는 라우트 자체가 없어 여전히 미정
+- [x] 백엔드 친구와 연동 방식 확정: REST API(FastAPI, POST /evaluate)로 확정. **단, 서버 파일은 `main.py`가 아니라 `policy_server.py`로 분리됨 (백엔드가 main.py를 자기 x402 서버로 씀)**
 - [x] 레이어2 LLM 기반 이상 패턴 판단 추가 → Gemini 연동 완료 (`semantic_layer.py`), `GEMINI_API_KEY` 확보 및 실제 API 테스트 완료
-- [x] 백엔드 친구와 확장된 `PaymentRequest` 입력 필드명 최종 합의 자료 작성 완료 → [BACKEND_연동_가이드.md](BACKEND_연동_가이드.md) (필드별 출처·시점 정리, `task_plan` 포함). ⚠️ 문서만 작성됨, 백엔드 친구에게 실제 전달 및 합의는 아직
+- [x] 백엔드 친구와 확장된 `PaymentRequest` 입력 필드명 최종 합의 → 백엔드의 실제 `main.py` 구현이 [BACKEND_연동_가이드.md](BACKEND_연동_가이드.md) 필드명과 정확히 일치함을 코드로 확인
 - [ ] `task_plan` 기반 "계획에 남은 단계 없으면 거부" 로직을 `semantic_layer.py` 프롬프트에 명시적으로 강화 (설계 확정, 구현 미완성)
-- [ ] 백엔드 코드와 실제 연동 테스트 (가격확인 → AI판단 → 결제 흐름 통합)
+- [ ] `main.py`(백엔드, x402 결제) + `policy_server.py`(내 서버) 동시 기동 후 실제 end-to-end 테스트 (결제→온체인 확인→진짜 Gemini 호출까지) — 아직 안 해봄. x402 관련 패키지(`x402`, `solana` 등) 설치 및 Devnet 지갑 잔액 준비 필요
 - [ ] (선택) 정보보안 친구에게 이번에 레이어2 재설계하며 발견한 구조적 한계(자기 근거 조작 불가 탐지) 공유 — 레이어1 hard cap이 최종 방어선임을 팀 전체가 인지하도록
 
 ## VS Code / Claude Code에서 요청할 것 (예시)

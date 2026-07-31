@@ -1,4 +1,11 @@
-fastapi
-uvicorn
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-dotenv>=1.0
+httpx>=0.27
+x402[fastapi,svm]>=0.2
+# x402의 svm signer가 solana.rpc.api(동기 Client)를 쓰는데, solana-py 0.37+에서
+# 그 모듈이 제거됨. 0.36.x대로 고정해야 import가 깨지지 않는다.
+solana<0.37
+# 아래 둘은 policy_server.py(AI 친구 정책 판단 엔진)용
 pydantic
 google-genai
