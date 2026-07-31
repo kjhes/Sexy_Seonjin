@@ -144,8 +144,36 @@ Day1에 이 연결고리(정책규칙 전달, JSON 포맷 합의) 안 끝나면 
 - 백엔드가 `/evaluate`로 보내는 필드가 [BACKEND_연동_가이드.md](BACKEND_연동_가이드.md)에서 정리한
   필드명과 **정확히 일치**함 (wallet_connected/wallet_balance를 placeholder 없이 실제 온체인 값으로 채움 등) — 별도 조율 없이 잘 맞음
 - 로컬에서 `policy_server.py` 단독 실행 후 `/evaluate` 실제 호출 테스트 완료: 공식 주소 불일치 시 거부,
-  일치 시 승인 둘 다 확인함. `main.py`(x402 + 실제 결제 + 실제 Gemini 호출)까지 엮은 end-to-end는 아직 미검증
+  일치 시 승인 둘 다 확인함
 - `README.md`를 "서버 두 개(터미널 두 개)" 실행 구조로 갱신
+
+## ✅ 실제 End-to-End 통합 테스트 완료 (진짜 Devnet 결제까지 검증)
+`main.py` + `policy_server.py`를 동시에 띄우고, 임시 테스트 지갑(Devnet 전용, 실제 가치 없음)을
+만들어서 진짜 x402 결제 → 정책판단 → 실제 Gemini 호출까지 전체 흐름을 실제로 통과시킴.
+
+**검증 과정에서 발견하고 고친 것**
+- 받는 지갑(`SOLANA_WALLET_ADDRESS`)이 Devnet에서 USDC를 한 번도 받아본 적이 없어서 USDC
+  계좌(ATA) 자체가 없었음 → `transaction_simulation_failed`로 결제가 계속 실패했음.
+  테스트 지갑의 SOL로 그 계좌를 대신 생성해서 해결(계좌 생성은 소유자 개인키 없이도 누구나 가능).
+  **⚠️ 만약 나중에 받는 지갑 주소가 바뀌면 이 과정을 다시 해야 함**
+- `main.py`의 `call_gemini_api()`가 실제 Gemini 호출에 쓰던 모델명 `gemini-2.0-flash`가
+  이 API 키로는 404(신규 사용자 차단, 레이어2 때와 같은 패턴) → `gemini-3.5-flash`로 교체.
+  (레이어2 판단용 `gemini-3.1-flash-lite`와는 별개 — 여긴 실제 사용자 응답 품질이 중요해서
+  더 상위 모델 선택. preview 모델은 이름이 바뀔 리스크가 있어 제외)
+
+**최종 확인된 결과 (실제 Devnet 트랜잭션)**
+1. 결제 없이 호출 → 실제 402 응답(가격 정보 포함) 정상 수신
+2. 서명된 결제로 재요청 → facilitator 검증 통과
+3. `main.py`가 `policy_server.py`의 `/evaluate` 실제 호출 → 레이어1(12개) + 레이어2(4개) 총 16개
+   조건 전부 통과, 승인
+4. 승인 후 실제 Gemini 호출 → 정상 응답 수신
+5. **온체인 잔액 실제 변동 확인**: 보낸 지갑 20 → 19.995 USDC, 받는 지갑 0 → 0.005 USDC
+   (딱 `GEMINI_PRICE_USD`만큼 정확히 이동)
+6. 결제 처리 도중 다운스트림(Gemini 호출)이 실패하면 정산(settle) 자체가 스킵되고 온체인 잔액이
+   안 움직이는 것도 확인함(모델명 버그로 500 나던 시점에 테스트) → "서비스 제공 실패 시 과금 안 됨"이
+   설계상 보장되는 안전한 구조라는 뜻
+
+즉 project.md 1~10단계 아키텍처 전체가 실제로 동작함을 실제 Devnet 트랜잭션으로 증명함.
 
 ## 현재까지 진행 상황
 - ✅ 정책 판단 엔진 레이어1 완성 (`policy_engine.py`)
@@ -172,7 +200,7 @@ Day1에 이 연결고리(정책규칙 전달, JSON 포맷 합의) 안 끝나면 
 - [x] 레이어2 LLM 기반 이상 패턴 판단 추가 → Gemini 연동 완료 (`semantic_layer.py`), `GEMINI_API_KEY` 확보 및 실제 API 테스트 완료
 - [x] 백엔드 친구와 확장된 `PaymentRequest` 입력 필드명 최종 합의 → 백엔드의 실제 `main.py` 구현이 [BACKEND_연동_가이드.md](BACKEND_연동_가이드.md) 필드명과 정확히 일치함을 코드로 확인
 - [ ] `task_plan` 기반 "계획에 남은 단계 없으면 거부" 로직을 `semantic_layer.py` 프롬프트에 명시적으로 강화 (설계 확정, 구현 미완성)
-- [ ] `main.py`(백엔드, x402 결제) + `policy_server.py`(내 서버) 동시 기동 후 실제 end-to-end 테스트 (결제→온체인 확인→진짜 Gemini 호출까지) — 아직 안 해봄. x402 관련 패키지(`x402`, `solana` 등) 설치 및 Devnet 지갑 잔액 준비 필요
+- [x] `main.py`(백엔드, x402 결제) + `policy_server.py`(내 서버) 동시 기동 후 실제 end-to-end 테스트 완료 (결제→온체인 확인→진짜 Gemini 호출까지, 실제 Devnet 트랜잭션으로 검증) — 상세는 위 "실제 End-to-End 통합 테스트 완료" 섹션
 - [ ] (선택) 정보보안 친구에게 이번에 레이어2 재설계하며 발견한 구조적 한계(자기 근거 조작 불가 탐지) 공유 — 레이어1 hard cap이 최종 방어선임을 팀 전체가 인지하도록
 
 ## VS Code / Claude Code에서 요청할 것 (예시)

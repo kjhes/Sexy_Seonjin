@@ -215,7 +215,7 @@ async def call_gemini_api(prompt: str) -> dict:
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        f"gemini-3.5-flash:generateContent?key={GEMINI_API_KEY}"
     )
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]})
