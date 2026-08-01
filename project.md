@@ -284,6 +284,7 @@ Day1에 이 연결고리(정책규칙 전달, JSON 포맷 합의) 안 끝나면 
 - [ ] (선택) 정보보안 친구에게 이번에 레이어2 재설계하며 발견한 구조적 한계(자기 근거 조작 불가 탐지) 공유 — 레이어1 hard cap이 최종 방어선임을 팀 전체가 인지하도록
 - [x] Pay.sh 공식 CLI로 실제 상호운용성 검증 완료 (서버 코드 무수정, 실제 devnet 결제 성공) — 상세는 위 "Pay.sh CLI 실제 검증" 섹션, 설치법은 `tools/paysh/README.md`
 - [ ] 팀 역할분담 문서의 "Pay.sh 연동" 표현을 실제 구현(= x402 표준 직접 구현, Pay.sh는 그 표준의 공식 클라이언트 중 하나로 호환 확인됨)에 맞게 팀에 공유·정정
+- [x] **지출 이중 차감 버그 수정**: `PolicyEngine.evaluate()`가 Layer1 통과 시점에 바로 `tracker.record()`를 호출해서, 뒤이어 Layer2(의미판단)가 거부해도 이미 하루 한도가 깎여 있던 문제. `evaluate()`는 더 이상 자동 커밋하지 않고, 별도 `commit()` 메서드로 분리. `policy_server.py`가 Layer1+Layer2 모두 통과했을 때만 `engine.commit()`을 호출하도록 수정. 버그 재현 테스트(`policy_engine.py` 테스트 11)로 검증 완료
 
 ## VS Code / Claude Code에서 요청할 것 (예시)
 "위 기획 기준으로, policy_engine.py를 FastAPI REST 엔드포인트로 감싸줘. 백엔드가 POST 요청으로 {amount, category} 보내면 위 JSON 포맷으로 응답하게."

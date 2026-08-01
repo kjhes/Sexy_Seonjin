@@ -234,12 +234,25 @@ class PolicyEngine:
         else:
             ok("call_count_ok")
 
-        # 승인된 경우에만 실제 지출로 기록 (거부된 건 카운트 안 함)
         if approved:
-            self.tracker.record(request.amount)
             reasons.append("모든 정책 통과")
 
         return self._result(approved, request, checks, reasons)
+
+    def commit(self, amount: float) -> float:
+        """실제 지출로 기록한다.
+
+        evaluate()는 여기서 더 이상 자동으로 커밋하지 않는다 — 이 레이어(하드 규칙)만
+        통과했다고 지출을 확정해버리면, 뒤이어 Layer 2(의미 판단)가 거부했을 때도 이미
+        하루 한도가 깎여버리는 문제가 있었다 (승인 안 된 요청이 예산을 갉아먹음).
+        그래서 호출 측(policy_server.py)이 Layer 1 + Layer 2 모두 통과를 확인한
+        뒤에만 이 메서드를 명시적으로 호출해서 커밋한다.
+
+        Returns:
+            커밋 후의 spent_today_after.
+        """
+        self.tracker.record(amount)
+        return self.tracker.get_spent_today()
 
     def _result(self, approved: bool, request: PaymentRequest, checks: list, reasons: list) -> dict:
         return {
@@ -261,6 +274,15 @@ class PolicyEngine:
 if __name__ == "__main__":
     OFFICIAL_ADDRESS = "OFFICIAL_GEMINI_ADDRESS"
 
+    def evaluate_and_commit(engine: PolicyEngine, request: PaymentRequest) -> dict:
+        """policy_server.py의 실제 흐름(Layer1 평가 -> 승인이면 커밋)을 그대로 흉내낸 테스트용 헬퍼.
+        (실제 서비스에서는 Layer2까지 통과해야 커밋하지만, 여기는 Layer1 단독 테스트라 Layer1
+        승인 시점에 바로 커밋한다.)"""
+        result = engine.evaluate(request)
+        if result["approved"]:
+            result["spent_today_after"] = engine.commit(request.amount)
+        return result
+
     def make_engine(max_calls_per_minute: int = 5) -> PolicyEngine:
         cfg = PolicyConfig(
             daily_limit=10.0,
@@ -275,7 +297,7 @@ if __name__ == "__main__":
 
     print("=== 테스트 1: 정상 승인 ===")
     engine = make_engine()
-    print(engine.evaluate(PaymentRequest(
+    print(evaluate_and_commit(engine, PaymentRequest(
         amount=0.005, category="gemini", wallet_balance=5.0,
         recipient_address=OFFICIAL_ADDRESS, request_id="req-1",
     )))
@@ -283,7 +305,7 @@ if __name__ == "__main__":
 
     print("=== 테스트 2: 건당 한도 초과 ===")
     engine = make_engine()
-    print(engine.evaluate(PaymentRequest(
+    print(evaluate_and_commit(engine, PaymentRequest(
         amount=5.0, category="gemini", wallet_balance=5.0,
         recipient_address=OFFICIAL_ADDRESS, request_id="req-2",
     )))
@@ -291,7 +313,7 @@ if __name__ == "__main__":
 
     print("=== 테스트 3: 허용 안 된 카테고리 ===")
     engine = make_engine()
-    print(engine.evaluate(PaymentRequest(
+    print(evaluate_and_commit(engine, PaymentRequest(
         amount=0.005, category="translate", wallet_balance=5.0,
         recipient_address=OFFICIAL_ADDRESS, request_id="req-3",
     )))
@@ -299,7 +321,7 @@ if __name__ == "__main__":
 
     print("=== 테스트 4: 지갑 미연결 ===")
     engine = make_engine()
-    print(engine.evaluate(PaymentRequest(
+    print(evaluate_and_commit(engine, PaymentRequest(
         amount=0.005, category="gemini", wallet_connected=False,
         recipient_address=OFFICIAL_ADDRESS, request_id="req-4",
     )))
@@ -307,7 +329,7 @@ if __name__ == "__main__":
 
     print("=== 테스트 5: 지갑 잔액 부족 ===")
     engine = make_engine()
-    print(engine.evaluate(PaymentRequest(
+    print(evaluate_and_commit(engine, PaymentRequest(
         amount=0.5, category="gemini", wallet_balance=0.1,
         recipient_address=OFFICIAL_ADDRESS, request_id="req-5",
     )))
@@ -315,7 +337,7 @@ if __name__ == "__main__":
 
     print("=== 테스트 6: 결제 대상 주소 불일치 ===")
     engine = make_engine()
-    print(engine.evaluate(PaymentRequest(
+    print(evaluate_and_commit(engine, PaymentRequest(
         amount=0.005, category="gemini", wallet_balance=5.0,
         recipient_address="SOME_OTHER_ADDRESS", request_id="req-6",
     )))
@@ -327,13 +349,13 @@ if __name__ == "__main__":
         amount=0.005, category="gemini", wallet_balance=5.0,
         recipient_address=OFFICIAL_ADDRESS, request_id="req-7",
     )
-    print(engine.evaluate(dup_request))
-    print(engine.evaluate(dup_request))
+    print(evaluate_and_commit(engine, dup_request))
+    print(evaluate_and_commit(engine, dup_request))
     print()
 
     print("=== 테스트 8: AI 반복 실패 ===")
     engine = make_engine()
-    print(engine.evaluate(PaymentRequest(
+    print(evaluate_and_commit(engine, PaymentRequest(
         amount=0.005, category="gemini", wallet_balance=5.0,
         ai_consecutive_failures=3, recipient_address=OFFICIAL_ADDRESS, request_id="req-8",
     )))
@@ -342,7 +364,7 @@ if __name__ == "__main__":
     print("=== 테스트 9: 분당 요청 과다 (레이트리밋) ===")
     engine = make_engine(max_calls_per_minute=5)
     for i in range(1, 8):
-        r = engine.evaluate(PaymentRequest(
+        r = evaluate_and_commit(engine, PaymentRequest(
             amount=0.005, category="gemini", wallet_balance=5.0,
             recipient_address=OFFICIAL_ADDRESS, request_id=f"req-rate-{i}",
         ))
@@ -352,7 +374,7 @@ if __name__ == "__main__":
     print("=== 테스트 10: 일일 한도 초과 시뮬레이션 ===")
     engine = make_engine(max_calls_per_minute=1000)  # 레이트리밋이 아니라 일일한도만 보기 위해 넉넉히 설정
     for i in range(1, 15):
-        r = engine.evaluate(PaymentRequest(
+        r = evaluate_and_commit(engine, PaymentRequest(
             amount=0.8, category="gemini", wallet_balance=100.0,
             recipient_address=OFFICIAL_ADDRESS, request_id=f"req-daily-{i}",
         ))
@@ -361,3 +383,14 @@ if __name__ == "__main__":
             break
         else:
             print(f"{i}번째 호출 승인, 누적: {r['spent_today_after']}")
+
+    print()
+    print("=== 테스트 11 (버그 재현): Layer1 승인 + Layer2 거부 시 지출이 이중으로 안 깎이는지 ===")
+    engine = make_engine()
+    layer1_only = engine.evaluate(PaymentRequest(
+        amount=0.005, category="gemini", wallet_balance=5.0,
+        recipient_address=OFFICIAL_ADDRESS, request_id="req-11",
+    ))
+    print("Layer1 평가 직후 (아직 커밋 안 함):", layer1_only["approved"], "spent_today:", engine.tracker.get_spent_today())
+    print("-> Layer2가 거부했다고 가정하고 commit()을 호출하지 않으면:")
+    print("   spent_today_after:", engine.tracker.get_spent_today(), "(0.0이어야 정상. 이전엔 여기서 0.005가 이미 깎여 있었음)")

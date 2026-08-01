@@ -78,6 +78,13 @@ def evaluate(req: PaymentRequestIn):
             result["approved"] = False
             result["reason"] = semantic_result["reason"]
 
+    # Layer 1 + Layer 2를 모두 통과했을 때만 실제 지출로 기록한다.
+    # (예전엔 engine.evaluate() 안에서 Layer 1 통과 시점에 바로 커밋했는데, 그 뒤
+    # Layer 2가 거부해도 이미 지출이 깎여 있어서 승인 안 된 요청이 하루 한도를
+    # 갉아먹는 버그가 있었다. 최종 승인 여부가 확정된 지금 시점에만 커밋한다.)
+    if result["approved"]:
+        result["spent_today_after"] = engine.commit(request.amount)
+
     return result
 
 
