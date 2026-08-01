@@ -136,12 +136,6 @@ const dailyLimit =
 const allowGemini =
     document.getElementById("allowGemini");
 
-const allowBigQuery =
-    document.getElementById("allowBigQuery");
-
-const allowCloudRun =
-    document.getElementById("allowCloudRun");
-
 
 const connectWalletButton =
     document.getElementById("connectWalletButton");
@@ -207,9 +201,7 @@ const appState = {
         dailyLimit: 10,
 
         allowedServices: {
-            gemini: true,
-            bigquery: true,
-            cloudrun: false
+            gemini: true
         },
 
         paymentMethod: "phantom"
@@ -1024,16 +1016,6 @@ function openSettings() {
             .allowedServices
             .gemini;
 
-    allowBigQuery.checked =
-        appState.settings
-            .allowedServices
-            .bigquery;
-
-    allowCloudRun.checked =
-        appState.settings
-            .allowedServices
-            .cloudrun;
-
 
     const selectedPayment =
         document.querySelector(
@@ -1123,9 +1105,7 @@ function saveSettings() {
 
     const allowedServiceCount =
         [
-            allowGemini.checked,
-            allowBigQuery.checked,
-            allowCloudRun.checked
+            allowGemini.checked
         ].filter(Boolean).length;
 
 
@@ -1161,13 +1141,7 @@ function saveSettings() {
 
         allowedServices: {
             gemini:
-                allowGemini.checked,
-
-            bigquery:
-                allowBigQuery.checked,
-
-            cloudrun:
-                allowCloudRun.checked
+                allowGemini.checked
         },
 
         paymentMethod:
@@ -1629,24 +1603,6 @@ function updateSettingsSummary() {
     }
 
 
-    if (
-        appState.settings
-            .allowedServices
-            .bigquery
-    ) {
-        services.push("BigQuery");
-    }
-
-
-    if (
-        appState.settings
-            .allowedServices
-            .cloudrun
-    ) {
-        services.push("Cloud Run");
-    }
-
-
     summaryServices.textContent =
         services.join(", ");
 
@@ -1844,9 +1800,7 @@ function normalizeBackendUrl(url) {
 
 function getServiceName(service) {
     const names = {
-        gemini: "Gemini",
-        bigquery: "BigQuery",
-        cloudrun: "Cloud Run"
+        gemini: "Gemini"
     };
 
 
