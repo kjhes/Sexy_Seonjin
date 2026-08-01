@@ -84,6 +84,12 @@ const processBadge =
 const processSteps =
     [...document.querySelectorAll(".process-step")];
 
+const chainProgress =
+    document.getElementById("chainProgress");
+
+const chainProgressText =
+    document.getElementById("chainProgressText");
+
 
 const successResult =
     document.getElementById("successResult");
@@ -347,8 +353,18 @@ async function handleStart() {
 
 
 /* =========================
-   실제 백엔드 요청
+   실제 백엔드 요청 (다단계 계획 자동 진행)
 ========================= */
+
+/*
+    목표가 뭉툭하면 백엔드(main.py)가 첫 호출에서 이를 구체적인 단계
+    리스트(plan_steps)로 분해하고, 각 단계가 충족됐는지(plan_step_status)를
+    돌려준다. 전부 충족(task_complete=true)될 때까지 next_prompt로
+    자동으로 다음 결제+호출을 이어간다 (demo_chain.py와 동일한 방식).
+
+    안전장치: MAX_CHAIN_STEPS에 도달하면 강제로 멈춘다.
+*/
+const MAX_CHAIN_STEPS = 5;
 
 async function executeUserRequest(goal) {
     const backendUrl =
@@ -356,7 +372,122 @@ async function executeUserRequest(goal) {
             appState.settings.backendUrl
         );
 
+    let prompt = goal;
+    let planSteps = null;
+    let planStepStatus = null;
+
+    const stepAnswers = [];
+    let totalAmount = 0;
+    let lastData = null;
+
+    for (
+        let stepNumber = 1;
+        stepNumber <= MAX_CHAIN_STEPS;
+        stepNumber += 1
+    ) {
+        updateChainProgress(
+            stepNumber,
+            planSteps,
+            planStepStatus
+        );
+
+        const data = await runSingleChainCall(
+            backendUrl,
+            prompt,
+            planSteps,
+            planStepStatus,
+            stepNumber
+        );
+
+        if (data === null) {
+            // runSingleChainCall이 이미 거절/오류 화면을 띄우고 중단한 경우
+            return;
+        }
+
+        lastData = data;
+        totalAmount += Number(data.amount ?? 0);
+
+        stepAnswers.push({
+            stepNumber,
+            answer:
+                data.answer ||
+                "실행 결과가 없습니다."
+        });
+
+        planSteps =
+            data.plan_steps || planSteps;
+
+        planStepStatus =
+            data.plan_step_status || planStepStatus;
+
+        updateChainProgress(
+            stepNumber,
+            planSteps,
+            planStepStatus
+        );
+
+        if (data.task_complete) {
+            completeAllProcessSteps();
+
+            showSuccessResult(
+                lastData,
+                stepAnswers,
+                totalAmount
+            );
+
+            return;
+        }
+
+        if (!data.next_prompt) {
+            // task_complete=false인데 next_prompt가 없으면 안전하게 중단한다.
+            completeAllProcessSteps();
+
+            showSuccessResult(
+                lastData,
+                stepAnswers,
+                totalAmount
+            );
+
+            return;
+        }
+
+        prompt = data.next_prompt;
+    }
+
+    // 안전장치: 최대 단계 수에 도달해 강제로 종료한다.
+    completeAllProcessSteps();
+
+    showSuccessResult(
+        lastData,
+        stepAnswers,
+        totalAmount
+    );
+}
+
+
+/*
+    체인의 한 단계(결제 1회 + /execute 호출 1회)를 처리한다.
+    거절되거나 오류가 나면 해당 결과 화면을 직접 띄우고 null을 반환한다
+    (호출부가 루프를 멈추라는 신호).
+*/
+async function runSingleChainCall(
+    backendUrl,
+    prompt,
+    planSteps,
+    planStepStatus,
+    stepNumber
+) {
+    resetProcessStepsForNextChainStep();
+
     prepareProcess();
+
+    processBadge.textContent =
+        planSteps && planSteps.length > 1
+            ? `${stepNumber}/${planSteps.length}단계 진행 중`
+            : "실행 중";
+
+    processBadge.className =
+        "process-badge running";
 
     activateProcessStep(0);
 
@@ -375,10 +506,6 @@ async function executeUserRequest(goal) {
 
     activateProcessStep(1);
 
-    /*
-        가격은 /config에서 이미 정해져 있으므로 확인 자체는 즉시 끝난다.
-        실제 서명·전송을 기다리는 동안에는 4번(결제) 단계를 진행 중으로 보여준다.
-    */
     completeProcessStep(1);
 
     if (shouldPayForReal) {
@@ -395,20 +522,29 @@ async function executeUserRequest(goal) {
 
             failProcessStep(3, "결제 실패");
 
-            throw new Error(
-                error.message ||
-                "지갑 결제에 실패했습니다."
+            showSystemError(
+                stepNumber > 1
+                    ? `${stepNumber}단계 결제 중 오류: ${error.message || "지갑 결제에 실패했습니다."}`
+                    : error.message || "지갑 결제에 실패했습니다."
             );
+
+            return null;
         }
     }
 
-    const payload = {
-        prompt: goal,
+    // 매 단계마다 새 request_id를 써야 한다 (같은 id를 재사용하면 중복 결제로 거절됨).
+    appState.currentRequestId =
+        createRequestId();
 
-        task_plan: goal,
+    const payload = {
+        prompt,
 
         request_id:
             appState.currentRequestId,
+
+        plan_steps: planSteps,
+
+        plan_step_status: planStepStatus,
 
         wallet: {
             connected:
@@ -449,9 +585,11 @@ async function executeUserRequest(goal) {
     } catch (error) {
         failProcessStep(0, "연결 실패");
 
-        throw new Error(
+        showSystemError(
             "백엔드 서버에 연결할 수 없습니다. 서버 주소와 실행 상태를 확인해 주세요."
         );
+
+        return null;
     }
 
 
@@ -463,9 +601,11 @@ async function executeUserRequest(goal) {
     } catch (error) {
         failCurrentProcessStep();
 
-        throw new Error(
+        showSystemError(
             "서버 응답 형식이 올바르지 않습니다."
         );
+
+        return null;
     }
 
 
@@ -483,11 +623,18 @@ async function executeUserRequest(goal) {
             data.approved === false ||
             data.status === "rejected"
         ) {
-            showRejectedResult(message);
-            return;
+            showRejectedResult(
+                stepNumber > 1
+                    ? `${stepNumber}단계에서 거부됨: ${message}`
+                    : message
+            );
+
+            return null;
         }
 
-        throw new Error(message);
+        showSystemError(message);
+
+        return null;
     }
 
 
@@ -513,7 +660,10 @@ async function executeUserRequest(goal) {
         결제를 진행하지 않고 거절 사유를 표시합니다.
     */
 
-    if (data.approved === false) {
+    if (
+        data.approved === false ||
+        data.status === "rejected"
+    ) {
         const rejectedStep =
             getRejectedStepIndex(data);
 
@@ -523,35 +673,55 @@ async function executeUserRequest(goal) {
         );
 
         showRejectedResult(
-            data.reason ||
-            "정책 검사에서 요청이 거절되었습니다."
+            stepNumber > 1
+                ? `${stepNumber}단계에서 거부됨: ${data.reason || "정책 검사에서 요청이 거절되었습니다."}`
+                : data.reason || "정책 검사에서 요청이 거절되었습니다."
         );
 
+        return null;
+    }
+
+    return data;
+}
+
+
+function resetProcessStepsForNextChainStep() {
+    processSteps.forEach((step) => {
+        step.classList.remove(
+            "active",
+            "completed",
+            "failed"
+        );
+
+        step.querySelector(
+            ".step-status"
+        ).textContent = "대기";
+    });
+}
+
+
+function updateChainProgress(
+    stepNumber,
+    planSteps,
+    planStepStatus
+) {
+    if (!planSteps || planSteps.length <= 1) {
+        chainProgress.classList.add("hidden");
         return;
     }
 
+    chainProgress.classList.remove("hidden");
 
-    if (data.status === "rejected") {
-        const rejectedStep =
-            getRejectedStepIndex(data);
+    chainProgressText.textContent =
+        planSteps
+            .map((step, index) => {
+                const done =
+                    planStepStatus &&
+                    planStepStatus[index];
 
-        failProcessStep(
-            rejectedStep,
-            "거절"
-        );
-
-        showRejectedResult(
-            data.reason ||
-            "정책 검사에서 요청이 거절되었습니다."
-        );
-
-        return;
-    }
-
-
-    completeAllProcessSteps();
-
-    showSuccessResult(data);
+                return `${done ? "✓" : "○"} ${index + 1}. ${step}`;
+            })
+            .join("\n");
 }
 
 
@@ -606,6 +776,9 @@ function clearInputMessage() {
 
 function resetExecutionScreen() {
     hideAllResults();
+
+    chainProgress.classList.add("hidden");
+    chainProgressText.textContent = "";
 
     emptyProcess.classList.add("hidden");
 
@@ -817,7 +990,11 @@ function getRejectedStepIndex(data) {
    성공 결과
 ========================= */
 
-function showSuccessResult(data) {
+function showSuccessResult(
+    data,
+    stepAnswers = null,
+    totalAmount = null
+) {
     hideAllResults();
 
     successResult.classList.remove("hidden");
@@ -836,11 +1013,13 @@ function showSuccessResult(data) {
 
 
     const amount =
-        Number(
-            data.amount ??
-            data.price ??
-            0
-        );
+        totalAmount !== null
+            ? totalAmount
+            : Number(
+                data.amount ??
+                data.price ??
+                0
+            );
 
 
     const signature =
@@ -853,11 +1032,24 @@ function showSuccessResult(data) {
         signature;
 
 
+    /*
+        여러 단계에 걸쳐 이어진 체인이면(stepAnswers.length > 1)
+        각 단계 답변을 번호와 함께 이어붙여서 보여준다.
+        단일 단계면 기존처럼 답변만 그대로 보여준다.
+    */
     const answer =
-        data.result ||
-        data.answer ||
-        data.output ||
-        "작업이 완료되었습니다.";
+        stepAnswers && stepAnswers.length > 1
+            ? stepAnswers
+                .map(
+                    (item) =>
+                        `[${item.stepNumber}단계]\n${item.answer}`
+                )
+                .join("\n\n")
+            : (stepAnswers && stepAnswers[0]?.answer) ||
+              data.result ||
+              data.answer ||
+              data.output ||
+              "작업이 완료되었습니다.";
 
     resultAnswer.textContent = data.demo_mode
         ? `${answer}\n\n[DEMO] 정책 검사는 실행되었지만 USDC는 결제되지 않았습니다.`
