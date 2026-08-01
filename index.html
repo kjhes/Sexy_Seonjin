@@ -1,0 +1,1186 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>AutoPay Agent | Team JAC</title>
+
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <!-- 상단 메뉴 -->
+    <header class="header">
+
+        <div class="brand">
+
+            <div class="brand-logo">
+                J
+            </div>
+
+            <div class="brand-text">
+
+                <h1>
+                    AutoPay Agent
+                </h1>
+
+                <p>
+                    Google Cloud × Solana · Team JAC
+                </p>
+
+            </div>
+
+        </div>
+
+
+        <div class="header-actions">
+
+            <div
+                id="walletBadge"
+                class="wallet-badge disconnected"
+            >
+                <span class="status-dot"></span>
+
+                <span id="walletBadgeText">
+                    지갑 연결 안 됨
+                </span>
+            </div>
+
+
+            <button
+                id="settingsButton"
+                class="secondary-button"
+                type="button"
+            >
+                설정
+            </button>
+
+        </div>
+
+    </header>
+
+
+    <!-- 메인 콘텐츠 -->
+    <main class="container">
+
+        <!-- 작업 목표 입력 -->
+        <section class="hero-card">
+
+            <span class="hero-badge">
+                AUTONOMOUS AI PAYMENT AGENT
+            </span>
+
+
+            <h2>
+                목표만 입력하면<br>
+                AI 에이전트가 결제와 실행을 처리합니다.
+            </h2>
+
+
+            <p class="hero-description">
+                AI가 작업에 필요한 Google 서비스를 판단하고,
+                정책 검사를 통과한 경우에만
+                Solana Devnet USDC 결제를 진행합니다.
+            </p>
+
+
+            <div class="request-form">
+
+                <label for="goalInput">
+                    작업 목표
+                </label>
+
+
+                <textarea
+                    id="goalInput"
+                    maxlength="500"
+                    placeholder="예: 인공지능 결제 시스템의 장점을 세 문장으로 요약해 주세요."
+                ></textarea>
+
+
+                <div class="input-information">
+
+                    <p
+                        id="inputMessage"
+                        class="input-message"
+                    ></p>
+
+                    <span id="characterCount">
+                        0 / 500
+                    </span>
+
+                </div>
+
+
+                <button
+                    id="startButton"
+                    class="primary-button start-button"
+                    type="button"
+                >
+                    <span id="startButtonText">
+                        작업 시작하기
+                    </span>
+
+                    <span>
+                        →
+                    </span>
+                </button>
+
+            </div>
+
+        </section>
+
+
+        <!-- 현재 결제 정책 -->
+        <section class="policy-card">
+
+            <div class="section-heading">
+
+                <div>
+
+                    <p class="section-kicker">
+                        PAYMENT POLICY
+                    </p>
+
+                    <h3>
+                        현재 적용 중인 정책
+                    </h3>
+
+                </div>
+
+
+                <button
+                    id="openSettingsFromPolicy"
+                    class="text-button"
+                    type="button"
+                >
+                    정책 변경
+                </button>
+
+            </div>
+
+
+            <div class="policy-grid">
+
+                <article class="policy-item">
+
+                    <span>
+                        1회 결제 한도
+                    </span>
+
+                    <strong id="summaryPerTransaction">
+                        2 USDC
+                    </strong>
+
+                </article>
+
+
+                <article class="policy-item">
+
+                    <span>
+                        하루 결제 한도
+                    </span>
+
+                    <strong id="summaryDailyLimit">
+                        10 USDC
+                    </strong>
+
+                </article>
+
+
+                <article class="policy-item">
+
+                    <span>
+                        허용 서비스
+                    </span>
+
+                    <strong id="summaryServices">
+                        Gemini, BigQuery
+                    </strong>
+
+                </article>
+
+
+                <article class="policy-item">
+
+                    <span>
+                        결제 방식
+                    </span>
+
+                    <strong id="summaryPaymentMethod">
+                        Phantom Wallet
+                    </strong>
+
+                </article>
+
+            </div>
+
+        </section>
+
+
+        <!-- 실행 진행 상황 -->
+        <section class="process-card">
+
+            <div class="section-heading">
+
+                <div>
+
+                    <p class="section-kicker">
+                        PROCESS
+                    </p>
+
+                    <h3>
+                        실행 진행 상황
+                    </h3>
+
+                </div>
+
+
+                <span
+                    id="processBadge"
+                    class="process-badge waiting"
+                >
+                    실행 대기
+                </span>
+
+            </div>
+
+
+            <!-- 아직 실행 안 된 화면 -->
+            <div
+                id="emptyProcess"
+                class="empty-process"
+            >
+
+                <div class="empty-process-icon">
+                    ○
+                </div>
+
+                <strong>
+                    아직 실행된 작업이 없습니다.
+                </strong>
+
+                <p>
+                    작업 목표를 입력하고 시작 버튼을 눌러 주세요.
+                </p>
+
+            </div>
+
+
+            <!-- 작업 진행 단계 -->
+            <div
+                id="processList"
+                class="process-list hidden"
+            >
+
+                <article
+                    class="process-step"
+                    data-step="0"
+                >
+
+                    <div class="step-number">
+                        1
+                    </div>
+
+                    <div class="step-content">
+
+                        <strong>
+                            사용자 요청 분석
+                        </strong>
+
+                        <p>
+                            사용자의 목표에 필요한 작업을 분석합니다.
+                        </p>
+
+                    </div>
+
+                    <span class="step-status">
+                        대기
+                    </span>
+
+                </article>
+
+
+                <article
+                    class="process-step"
+                    data-step="1"
+                >
+
+                    <div class="step-number">
+                        2
+                    </div>
+
+                    <div class="step-content">
+
+                        <strong>
+                            서비스 및 가격 확인
+                        </strong>
+
+                        <p>
+                            필요한 Google Cloud 서비스의 청구 가격을 확인합니다.
+                        </p>
+
+                    </div>
+
+                    <span class="step-status">
+                        대기
+                    </span>
+
+                </article>
+
+
+                <article
+                    class="process-step"
+                    data-step="2"
+                >
+
+                    <div class="step-number">
+                        3
+                    </div>
+
+                    <div class="step-content">
+
+                        <strong>
+                            AI 정책 검사
+                        </strong>
+
+                        <p>
+                            결제 한도, 서비스, 보안과 권한을 검사합니다.
+                        </p>
+
+                    </div>
+
+                    <span class="step-status">
+                        대기
+                    </span>
+
+                </article>
+
+
+                <article
+                    class="process-step"
+                    data-step="3"
+                >
+
+                    <div class="step-number">
+                        4
+                    </div>
+
+                    <div class="step-content">
+
+                        <strong>
+                            지갑 서명 및 USDC 결제
+                        </strong>
+
+                        <p>
+                            연결된 지갑으로 결제 트랜잭션을 전송합니다.
+                        </p>
+
+                    </div>
+
+                    <span class="step-status">
+                        대기
+                    </span>
+
+                </article>
+
+
+                <article
+                    class="process-step"
+                    data-step="4"
+                >
+
+                    <div class="step-number">
+                        5
+                    </div>
+
+                    <div class="step-content">
+
+                        <strong>
+                            온체인 결제 확인
+                        </strong>
+
+                        <p>
+                            Solana Devnet에 결제가 기록되었는지 확인합니다.
+                        </p>
+
+                    </div>
+
+                    <span class="step-status">
+                        대기
+                    </span>
+
+                </article>
+
+
+                <article
+                    class="process-step"
+                    data-step="5"
+                >
+
+                    <div class="step-number">
+                        6
+                    </div>
+
+                    <div class="step-content">
+
+                        <strong>
+                            Google Cloud API 실행
+                        </strong>
+
+                        <p>
+                            결제 증빙을 제출하고 실제 API를 실행합니다.
+                        </p>
+
+                    </div>
+
+                    <span class="step-status">
+                        대기
+                    </span>
+
+                </article>
+
+
+                <article
+                    class="process-step"
+                    data-step="6"
+                >
+
+                    <div class="step-number">
+                        7
+                    </div>
+
+                    <div class="step-content">
+
+                        <strong>
+                            최종 결과 전달
+                        </strong>
+
+                        <p>
+                            API 실행 결과와 결제 정보를 화면에 표시합니다.
+                        </p>
+
+                    </div>
+
+                    <span class="step-status">
+                        대기
+                    </span>
+
+                </article>
+
+            </div>
+
+        </section>
+
+
+        <!-- 성공 결과 -->
+        <section
+            id="successResult"
+            class="result-card hidden"
+        >
+
+            <div class="result-header">
+
+                <div class="result-icon success-icon">
+                    ✓
+                </div>
+
+
+                <div>
+
+                    <p class="result-label">
+                        EXECUTION COMPLETE
+                    </p>
+
+                    <h3>
+                        작업이 성공적으로 완료되었습니다.
+                    </h3>
+
+                </div>
+
+            </div>
+
+
+            <div class="answer-box">
+
+                <span>
+                    AI 실행 결과
+                </span>
+
+                <p id="resultAnswer">
+                    실행 결과가 여기에 표시됩니다.
+                </p>
+
+            </div>
+
+
+            <div class="result-grid">
+
+                <article>
+
+                    <span>
+                        사용 서비스
+                    </span>
+
+                    <strong id="resultService">
+                        -
+                    </strong>
+
+                </article>
+
+
+                <article>
+
+                    <span>
+                        정책 판단
+                    </span>
+
+                    <strong class="success-text">
+                        승인
+                    </strong>
+
+                </article>
+
+
+                <article>
+
+                    <span>
+                        결제 금액
+                    </span>
+
+                    <strong id="resultAmount">
+                        -
+                    </strong>
+
+                </article>
+
+
+                <article>
+
+                    <span>
+                        네트워크
+                    </span>
+
+                    <strong>
+                        Solana Devnet
+                    </strong>
+
+                </article>
+
+
+                <article>
+
+                    <span>
+                        결제 상태
+                    </span>
+
+                    <strong
+                        id="resultPaymentStatus"
+                        class="success-text"
+                    >
+                        결제 완료
+                    </strong>
+
+                </article>
+
+
+                <article>
+
+                    <span>
+                        요청 ID
+                    </span>
+
+                    <strong id="resultRequestId">
+                        -
+                    </strong>
+
+                </article>
+
+            </div>
+
+
+            <div class="transaction-box">
+
+                <div>
+
+                    <span>
+                        트랜잭션 서명
+                    </span>
+
+                    <strong id="transactionSignature">
+                        -
+                    </strong>
+
+                </div>
+
+
+                <button
+                    id="copyTransactionButton"
+                    class="copy-button"
+                    type="button"
+                >
+                    복사
+                </button>
+
+            </div>
+
+
+            <div class="policy-check-box">
+
+                <span>
+                    통과한 정책 검사
+                </span>
+
+                <div id="policyCheckList"></div>
+
+            </div>
+
+        </section>
+
+
+        <!-- 정책 거절 결과 -->
+        <section
+            id="rejectedResult"
+            class="result-card hidden"
+        >
+
+            <div class="result-header">
+
+                <div class="result-icon rejected-icon">
+                    !
+                </div>
+
+
+                <div>
+
+                    <p class="result-label">
+                        REQUEST REJECTED
+                    </p>
+
+                    <h3>
+                        요청이 정책에 의해 거절되었습니다.
+                    </h3>
+
+                </div>
+
+            </div>
+
+
+            <div class="rejection-message">
+
+                <span>
+                    거절 사유
+                </span>
+
+                <strong id="rejectionReason">
+                    요청을 처리할 수 없습니다.
+                </strong>
+
+            </div>
+
+
+            <div class="rejection-bottom">
+
+                <p>
+                    결제가 실행되지 않았으며 USDC는 차감되지 않았습니다.
+                </p>
+
+
+                <button
+                    id="retryButton"
+                    class="secondary-button"
+                    type="button"
+                >
+                    요청 수정하기
+                </button>
+
+            </div>
+
+        </section>
+
+
+        <!-- 시스템 오류 결과 -->
+        <section
+            id="errorResult"
+            class="result-card hidden"
+        >
+
+            <div class="result-header">
+
+                <div class="result-icon error-icon">
+                    ×
+                </div>
+
+
+                <div>
+
+                    <p class="result-label">
+                        SYSTEM ERROR
+                    </p>
+
+                    <h3>
+                        작업 실행 중 오류가 발생했습니다.
+                    </h3>
+
+                </div>
+
+            </div>
+
+
+            <div class="rejection-message">
+
+                <span>
+                    오류 내용
+                </span>
+
+                <strong id="errorMessage">
+                    서버에 연결할 수 없습니다.
+                </strong>
+
+            </div>
+
+        </section>
+
+    </main>
+
+
+    <!-- 설정 창 -->
+    <div
+        id="settingsOverlay"
+        class="modal-overlay hidden"
+    >
+
+        <section class="settings-modal">
+
+            <div class="modal-header">
+
+                <div>
+
+                    <p class="section-kicker">
+                        AGENT SETTINGS
+                    </p>
+
+                    <h2>
+                        결제 에이전트 설정
+                    </h2>
+
+                </div>
+
+
+                <button
+                    id="closeSettingsButton"
+                    class="close-button"
+                    type="button"
+                    aria-label="설정 닫기"
+                >
+                    ×
+                </button>
+
+            </div>
+
+
+            <div class="settings-content">
+
+                <!-- API 연결 설정 -->
+                <section class="setting-group">
+
+                    <h3>
+                        API 연결 설정
+                    </h3>
+
+                    <p class="setting-description">
+                        백엔드 서버의 Google Cloud API 연결 상태를 확인합니다.
+                    </p>
+
+
+                    <label class="field-label">
+
+                        백엔드 서버 주소
+
+                        <input
+                            id="backendUrlInput"
+                            type="url"
+                            placeholder="예: http://localhost:3000"
+                        >
+
+                    </label>
+
+
+                    <div class="connection-row">
+
+                        <span>
+                            연결 상태
+                        </span>
+
+                        <strong
+                            id="apiConnectionStatus"
+                            class="warning-text"
+                        >
+                            확인되지 않음
+                        </strong>
+
+                    </div>
+
+
+                    <button
+                        id="testApiButton"
+                        class="secondary-button full-button"
+                        type="button"
+                    >
+                        API 연결 테스트
+                    </button>
+
+                </section>
+
+
+                <!-- AI 자동 실행 -->
+                <section class="setting-group">
+
+                    <div class="switch-row">
+
+                        <div>
+
+                            <h3>
+                                AI 자동 실행
+                            </h3>
+
+                            <p class="setting-description">
+                                AI가 필요한 서비스를 판단하고 작업을 자동 실행합니다.
+                            </p>
+
+                        </div>
+
+
+                        <label class="switch">
+
+                            <input
+                                id="autoExecuteToggle"
+                                type="checkbox"
+                                checked
+                            >
+
+                            <span class="switch-slider"></span>
+
+                        </label>
+
+                    </div>
+
+                </section>
+
+
+                <!-- 결제 한도 -->
+                <section class="setting-group">
+
+                    <h3>
+                        결제 한도
+                    </h3>
+
+
+                    <div class="two-column">
+
+                        <label class="field-label">
+
+                            1회 결제 한도
+
+                            <div class="input-with-unit">
+
+                                <input
+                                    id="perTransactionLimit"
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    value="2"
+                                >
+
+                                <span>
+                                    USDC
+                                </span>
+
+                            </div>
+
+                        </label>
+
+
+                        <label class="field-label">
+
+                            하루 결제 한도
+
+                            <div class="input-with-unit">
+
+                                <input
+                                    id="dailyLimit"
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    value="10"
+                                >
+
+                                <span>
+                                    USDC
+                                </span>
+
+                            </div>
+
+                        </label>
+
+                    </div>
+
+                </section>
+
+
+                <!-- 허용 서비스 -->
+                <section class="setting-group">
+
+                    <h3>
+                        사용할 서비스 선택
+                    </h3>
+
+                    <p class="setting-description">
+                        허용된 서비스만 AI 에이전트가 사용할 수 있습니다.
+                    </p>
+
+
+                    <label class="service-check">
+
+                        <input
+                            id="allowGemini"
+                            type="checkbox"
+                            checked
+                        >
+
+                        <div>
+
+                            <strong>
+                                Gemini
+                            </strong>
+
+                            <span>
+                                텍스트 생성과 분석
+                            </span>
+
+                        </div>
+
+                    </label>
+
+
+                    <label class="service-check">
+
+                        <input
+                            id="allowBigQuery"
+                            type="checkbox"
+                            checked
+                        >
+
+                        <div>
+
+                            <strong>
+                                BigQuery
+                            </strong>
+
+                            <span>
+                                데이터 조회와 분석
+                            </span>
+
+                        </div>
+
+                    </label>
+
+
+                    <label class="service-check">
+
+                        <input
+                            id="allowCloudRun"
+                            type="checkbox"
+                        >
+
+                        <div>
+
+                            <strong>
+                                Cloud Run
+                            </strong>
+
+                            <span>
+                                컨테이너 기반 작업 실행
+                            </span>
+
+                        </div>
+
+                    </label>
+
+                </section>
+
+
+                <!-- 지갑 연결 -->
+                <section class="setting-group">
+
+                    <h3>
+                        지갑 연결 상태
+                    </h3>
+
+                    <p class="setting-description">
+                        Solana 지갑 연결 상태와 USDC 잔액을 확인합니다.
+                    </p>
+
+
+                    <div class="wallet-information">
+
+                        <div>
+
+                            <span>
+                                연결 상태
+                            </span>
+
+                            <strong id="settingsWalletStatus">
+                                연결 안 됨
+                            </strong>
+
+                        </div>
+
+
+                        <div>
+
+                            <span>
+                                지갑 주소
+                            </span>
+
+                            <strong id="settingsWalletAddress">
+                                -
+                            </strong>
+
+                        </div>
+
+
+                        <div>
+
+                            <span>
+                                USDC 잔액
+                            </span>
+
+                            <strong id="settingsWalletBalance">
+                                확인되지 않음
+                            </strong>
+
+                        </div>
+
+                    </div>
+
+
+                    <button
+                        id="connectWalletButton"
+                        class="primary-button full-button"
+                        type="button"
+                    >
+                        Phantom 지갑 연결
+                    </button>
+
+                </section>
+
+
+                <!-- 결제 방식 -->
+                <section class="setting-group">
+
+                    <h3>
+                        결제 방식 선택
+                    </h3>
+
+
+                    <label class="payment-option">
+
+                        <input
+                            type="radio"
+                            name="paymentMethod"
+                            value="phantom"
+                            checked
+                        >
+
+                        <div>
+
+                            <strong>
+                                Phantom Wallet
+                            </strong>
+
+                            <span>
+                                사용자가 지갑에서 거래를 직접 승인합니다.
+                            </span>
+
+                        </div>
+
+                    </label>
+
+
+                    <label class="payment-option">
+
+                        <input
+                            type="radio"
+                            name="paymentMethod"
+                            value="agent"
+                        >
+
+                        <div>
+
+                            <strong>
+                                Agent Wallet
+                            </strong>
+
+                            <span>
+                                설정된 정책 범위에서 자동 결제를 진행합니다.
+                            </span>
+
+                        </div>
+
+                    </label>
+
+                </section>
+
+            </div>
+
+
+            <div class="modal-footer">
+
+                <button
+                    id="cancelSettingsButton"
+                    class="secondary-button"
+                    type="button"
+                >
+                    취소
+                </button>
+
+
+                <button
+                    id="saveSettingsButton"
+                    class="primary-button"
+                    type="button"
+                >
+                    설정 저장
+                </button>
+
+            </div>
+
+        </section>
+
+    </div>
+
+
+    <footer class="footer">
+
+        <p>
+            Built by Team JAC · Google Cloud × Solana
+        </p>
+
+        <span>
+            Solana Devnet
+        </span>
+
+    </footer>
+
+
+    <script src="script.js"></script>
+
+</body>
+</html>

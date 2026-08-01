@@ -10,7 +10,9 @@
 
 ## 핵심 기술 개념
 - **x402**: HTTP 402 상태코드 기반 결제 요청 표준. 가격을 물어보는 요청 자체는 무료 — 실제 결제는 서명 후 재요청할 때만 발생
-- **Pay.sh**: Google Cloud + Solana Foundation이 만든 오픈소스 결제 프록시 (에이전트-클라우드 사이 중개)
+- **Pay.sh**: Google Cloud + Solana Foundation이 만든 공식 결제 CLI 도구([solana-foundation/pay](https://github.com/solana-foundation/pay)).
+  별도 프로토콜이 아니라 x402(+MPP)를 감싸서 402 응답을 자동으로 처리해주는 래퍼. 실제로 우리 x402
+  서버(`main.py`)에 서버 코드 수정 없이 그대로 붙여서 실결제까지 검증함 (아래 "Pay.sh CLI 실제 검증" 참고)
 - **Solana**: 실제 USDC 이체가 일어나는 블록체인 네트워크. 가격을 정하는 게 아니라 이체만 실행하는 인프라
 - **USDC**: 결제에 쓰는 스테이블코인
 
@@ -228,6 +230,31 @@ Day1에 이 연결고리(정책규칙 전달, JSON 포맷 합의) 안 끝나면 
 → **정리: 한 번에 끝낼 수 있는 작업은 1번만, 정말 여러 단계가 필요한 작업은 필요한
 만큼만 자동으로 이어지는 것을 양쪽 다 실제 온체인 트랜잭션으로 검증 완료.**
 
+## Pay.sh CLI 실제 검증 (공식 결제 도구와 상호운용성 확인)
+팀 역할분담 문서에 "Pay.sh 연동"이 게임 친구(백엔드) 담당으로 적혀 있었는데, 실제로는 우리
+백엔드가 x402 프로토콜을 직접 구현하는 쪽으로 갔었음. Pay.sh가 정확히 뭔지 다시 조사해보니
+**Pay.sh는 별도 프로토콜이 아니라 x402(+MPP)를 감싸는 공식 CLI 도구**([solana-foundation/pay](https://github.com/solana-foundation/pay))였고,
+우리 서버가 이미 x402 표준을 그대로 구현하고 있으니 서버 코드를 하나도 안 고치고 바로 붙는지
+실제로 검증함 (`tools/paysh/README.md`에 설치·검증 과정 상세 기록).
+
+**검증 방법**: Pay.sh 공식 GitHub 릴리스에서 Windows용 `pay.exe` 다운로드(체크섬 검증) →
+헤드리스 계정 설정(`pay account import ... --backend file`, OS 생체인증 없이 파일 기반 키
+저장) → `pay curl`로 우리 `main.py`의 `POST /api/gemini`를 직접 호출.
+
+**결과**:
+1. `pay`가 402 응답의 `network: solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1`(devnet)을 정확히 인식
+2. 우리 서버와 동일한 공식 facilitator(`x402.org`)로 결제 검증까지 정상 도달 (서버 로그로 확인)
+3. devnet SOL·USDC를 충전한 뒤 재시도 → **실제 결제 성공**: 결제 지갑 0.035 → 0.03 USDC,
+   수신 지갑(`SOLANA_WALLET_ADDRESS`)에 +0.005 USDC — 온체인 잔액 변화로 확정
+4. 결제 확정 후 정책 엔진(`policy_server.py`) 16개 조건 전부 통과 → 진짜 Gemini API 응답까지 수신
+5. (중간에 있었던 서버 500 에러·정책 거부 시도에서는 x402 미들웨어가 설계대로 정산을 취소해서
+   실제 자금 손실 없음도 함께 확인함 — "결제 확정 전 실패는 항상 안전하게 취소된다"는 방어
+   설계가 실전에서도 그대로 작동함)
+
+**결론**: Pay.sh는 우리 x402 서버와 서버 측 변경 없이 완전히 상호운용된다. 즉 우리가 만든
+결제 서버는 자체 제작한 임시방편이 아니라 **Pay.sh가 내부적으로 쓰는 것과 동일한 공식 표준을
+따르는 진짜 호환 구현**이라는 게 실제 자금 이동으로 증명됨.
+
 ## 현재까지 진행 상황
 - ✅ 정책 판단 엔진 레이어1 완성 (`policy_engine.py`)
   - `PolicyConfig`: 정책 숫자 설정 (일일한도, 건당한도, 허용카테고리, 최대호출횟수, 분당호출한도, AI연속실패한도, 공식 결제대상 주소)
@@ -255,6 +282,8 @@ Day1에 이 연결고리(정책규칙 전달, JSON 포맷 합의) 안 끝나면 
 - [ ] `task_plan` 기반 "계획에 남은 단계 없으면 거부" 로직을 `semantic_layer.py` 프롬프트에 명시적으로 강화 (설계 확정, 구현 미완성)
 - [x] `main.py`(백엔드, x402 결제) + `policy_server.py`(내 서버) 동시 기동 후 실제 end-to-end 테스트 완료 (결제→온체인 확인→진짜 Gemini 호출까지, 실제 Devnet 트랜잭션으로 검증) — 상세는 위 "실제 End-to-End 통합 테스트 완료" 섹션
 - [ ] (선택) 정보보안 친구에게 이번에 레이어2 재설계하며 발견한 구조적 한계(자기 근거 조작 불가 탐지) 공유 — 레이어1 hard cap이 최종 방어선임을 팀 전체가 인지하도록
+- [x] Pay.sh 공식 CLI로 실제 상호운용성 검증 완료 (서버 코드 무수정, 실제 devnet 결제 성공) — 상세는 위 "Pay.sh CLI 실제 검증" 섹션, 설치법은 `tools/paysh/README.md`
+- [ ] 팀 역할분담 문서의 "Pay.sh 연동" 표현을 실제 구현(= x402 표준 직접 구현, Pay.sh는 그 표준의 공식 클라이언트 중 하나로 호환 확인됨)에 맞게 팀에 공유·정정
 
 ## VS Code / Claude Code에서 요청할 것 (예시)
 "위 기획 기준으로, policy_engine.py를 FastAPI REST 엔드포인트로 감싸줘. 백엔드가 POST 요청으로 {amount, category} 보내면 위 JSON 포맷으로 응답하게."

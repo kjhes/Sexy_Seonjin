@@ -6,6 +6,10 @@
   3. call_policy_engine()이 방금 검증된 결제 트랜잭션에서 실제 지갑 주소를 뽑아
      Solana Devnet RPC로 온체인 USDC 잔액을 조회하고, AI 친구의 /evaluate로 재검증 요청
   4. 승인되면 결제 정산(settle)이 이루어지고, 진짜 Gemini API를 호출해 결과를 돌려줌
+
+/execute는 로봇 친구(프론트엔드) 데모용 어댑터다. DEMO_MODE에서는 x402 결제 미들웨어를
+거치지 않고 정책 판단만 실제로 수행한 뒤 Gemini를 호출한다 (USDC는 실제로 이동하지 않음).
+실제 온체인 결제까지 검증된 경로는 /api/gemini + demo_chain.py 참고.
 """
 
 import json
@@ -16,7 +20,8 @@ import uuid
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 from x402.http import FacilitatorConfig, HTTPFacilitatorClient, PaymentOption, RouteConfig
 from x402.http.middleware.fastapi import PaymentMiddlewareASGI
@@ -41,6 +46,8 @@ POLICY_ENGINE_URL = os.getenv("POLICY_ENGINE_URL")
 SOLANA_RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.devnet.solana.com")
 FACILITATOR_URL = os.getenv("FACILITATOR_URL", "https://x402.org/facilitator")
 GEMINI_PRICE_USD = float(os.getenv("GEMINI_PRICE_USD", "0.005"))
+DEMO_MODE = os.getenv("DEMO_MODE", "true").lower() in {"1", "true", "yes", "on"}
+CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "*").split(",") if origin.strip()]
 
 if not SOLANA_WALLET_ADDRESS:
     raise RuntimeError("SOLANA_WALLET_ADDRESS 환경변수가 필요합니다 (.env 확인)")
@@ -53,6 +60,13 @@ SVM_NETWORK: Network = SOLANA_DEVNET_CAIP2  # "solana:EtWTRABZaYq6iMfeYKouRu166V
 # FastAPI 앱 + x402 결제 미들웨어
 # ---------------------------------------------------------------------------
 app = FastAPI(title="Gemini x402 결제 서버")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=CORS_ORIGINS != ["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 facilitator = HTTPFacilitatorClient(FacilitatorConfig(url=FACILITATOR_URL))
 resource_server = x402ResourceServer(facilitator)
@@ -80,6 +94,22 @@ class GeminiRequestIn(BaseModel):
     task_plan: str | None = None
 
 
+class DemoWalletIn(BaseModel):
+    connected: bool = False
+    public_key: str = ""
+    balance: float | None = None
+
+
+class ExecuteRequestIn(BaseModel):
+    prompt: str
+    request_id: str | None = None
+    task_plan: str | None = None
+    wallet: DemoWalletIn = Field(default_factory=DemoWalletIn)
+    # 프론트에서 Phantom으로 실제 서명해서 제출한 devnet USDC 결제 트랜잭션 서명.
+    # 채워져 있으면 온체인에서 직접 검증하고, 없으면 기존 데모(미결제) 경로로 처리한다.
+    transaction_signature: str | None = None
+
+
 # AI 소비자별 연속 실패 횟수 (BACKEND_연동_가이드.md의 ai_consecutive_failures).
 # 단일 프로세스 데모 서버라 프로세스 메모리에 카운터를 둔다.
 _consecutive_failures = 0
@@ -87,7 +117,7 @@ _consecutive_failures = 0
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "demo_mode": str(DEMO_MODE).lower()}
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +152,126 @@ async def get_onchain_usdc_balance(wallet_address: str) -> float:
         except (KeyError, TypeError):
             continue
     return total
+
+
+@app.get("/wallet/balance")
+async def wallet_balance(address: str) -> dict:
+    """Return a wallet's Solana Devnet USDC balance for the frontend."""
+    if not address.strip():
+        raise HTTPException(status_code=400, detail="Wallet address is required.")
+    try:
+        balance = await get_onchain_usdc_balance(address.strip())
+    except Exception as exc:
+        logger.exception("Failed to query the Solana Devnet USDC balance")
+        raise HTTPException(status_code=502, detail="Solana balance lookup failed.") from exc
+    return {"address": address.strip(), "usdc_balance": balance, "network": "solana-devnet"}
+
+
+@app.get("/config")
+async def get_config() -> dict:
+    """프론트엔드가 결제 트랜잭션을 직접 구성할 때 필요한 값들.
+    비밀값이 아니라 전부 공개 정보(수신 주소, 가격, 민트 주소)다."""
+    return {
+        "recipient_address": SOLANA_WALLET_ADDRESS,
+        "price_usd": GEMINI_PRICE_USD,
+        "usdc_mint": USDC_DEVNET_ADDRESS,
+        "decimals": 6,
+        "rpc_url": SOLANA_RPC_URL,
+        "network": "solana-devnet",
+    }
+
+
+# ---------------------------------------------------------------------------
+# /execute(데모 프론트) 전용: 브라우저가 보낸 실제 결제 트랜잭션 서명을
+# 온체인에서 직접 검증한다. x402 프로토콜(파실리테이터 검증/정산)을 그대로
+# 타지는 않지만, 실제 devnet USDC가 우리 수신 지갑으로 이동했는지는 진짜로 확인한다.
+# ---------------------------------------------------------------------------
+_used_payment_signatures: set[str] = set()
+_recipient_ata_cache: str | None = None
+
+
+async def get_associated_token_account(owner_address: str) -> str | None:
+    """지정한 지갑이 보유한 USDC(devnet) 계좌(ATA) 주소를 온체인에서 조회한다."""
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getTokenAccountsByOwner",
+        "params": [
+            owner_address,
+            {"mint": USDC_DEVNET_ADDRESS},
+            {"encoding": "jsonParsed"},
+        ],
+    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(SOLANA_RPC_URL, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+    accounts = data.get("result", {}).get("value", [])
+    return accounts[0]["pubkey"] if accounts else None
+
+
+async def verify_onchain_usdc_payment(signature: str, expected_amount_usd: float) -> str | None:
+    """서명이 실제로 우리 수신 지갑의 USDC 계좌로 기대 금액 이상을 이체했는지
+    Solana Devnet RPC(getTransaction)로 직접 검증한다.
+
+    성공하면 실제 결제를 보낸 지갑(authority) 주소를 돌려주고, 실패하면 None.
+    같은 서명을 여러 번 재사용해 결제 없이 통과하는 걸(리플레이) 막기 위해
+    한 번 검증에 성공한 서명은 프로세스 메모리에 기록해 재사용을 거부한다.
+    """
+    if not signature or signature in _used_payment_signatures:
+        return None
+
+    global _recipient_ata_cache
+    if _recipient_ata_cache is None:
+        _recipient_ata_cache = await get_associated_token_account(SOLANA_WALLET_ADDRESS)
+    if _recipient_ata_cache is None:
+        logger.error("수신 지갑의 USDC 계좌(ATA)를 찾을 수 없음")
+        return None
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getTransaction",
+        "params": [
+            signature,
+            {"encoding": "jsonParsed", "commitment": "confirmed", "maxSupportedTransactionVersion": 0},
+        ],
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(SOLANA_RPC_URL, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception:
+        logger.exception("트랜잭션 조회 실패 (Solana RPC)")
+        return None
+
+    result = data.get("result")
+    if not result or result.get("meta", {}).get("err") is not None:
+        return None
+
+    expected_raw_amount = round(expected_amount_usd * 1_000_000)  # USDC는 소수점 6자리
+
+    instructions = list(result["transaction"]["message"].get("instructions", []))
+    for inner in result.get("meta", {}).get("innerInstructions", []) or []:
+        instructions.extend(inner.get("instructions", []))
+
+    for ix in instructions:
+        parsed = ix.get("parsed")
+        if not parsed or ix.get("program") != "spl-token" or parsed.get("type") != "transferChecked":
+            continue
+        info = parsed.get("info", {})
+        if info.get("mint") != USDC_DEVNET_ADDRESS:
+            continue
+        if info.get("destination") != _recipient_ata_cache:
+            continue
+        raw_amount = int(info.get("tokenAmount", {}).get("amount", "0"))
+        if raw_amount < expected_raw_amount:
+            continue
+        _used_payment_signatures.add(signature)
+        return info.get("authority")
+
+    return None
 
 
 def extract_payer_wallet(request: Request) -> str | None:
@@ -273,6 +423,143 @@ def _extract_chain_result(gemini_result: dict) -> dict:
 # ---------------------------------------------------------------------------
 # 메인 라우트: 결제(x402 미들웨어, 이미 통과) -> 승인(정책 엔진) -> 실행(Gemini)
 # ---------------------------------------------------------------------------
+@app.post("/execute")
+async def execute_demo(payload: ExecuteRequestIn) -> dict:
+    """Frontend orchestration adapter.
+
+    payload.transaction_signature가 있으면 브라우저(Phantom)가 실제로 서명해서
+    제출한 devnet USDC 결제를 온체인에서 직접 검증하고, 그 결과(진짜 지갑 주소·
+    진짜 잔액)로 정책 판단을 돌린다. 서명이 없으면 기존 데모(미결제) 경로로 처리한다.
+    """
+    global _consecutive_failures
+
+    if not DEMO_MODE:
+        raise HTTPException(status_code=503, detail="The demo payment endpoint is disabled.")
+
+    request_id = payload.request_id or str(uuid.uuid4())
+    real_payment = False
+
+    if payload.transaction_signature:
+        payer_address = await verify_onchain_usdc_payment(payload.transaction_signature, GEMINI_PRICE_USD)
+        if payer_address is None:
+            _consecutive_failures += 1
+            return {
+                "approved": False,
+                "status": "rejected",
+                "reason": "온체인 결제 검증에 실패했습니다. 트랜잭션이 아직 확정되지 않았거나, "
+                          "결제 금액·수신 주소가 일치하지 않거나, 이미 사용된 서명입니다.",
+                "rejected_stage": "payment",
+                "request_id": request_id,
+                "category": "gemini",
+                "amount": GEMINI_PRICE_USD,
+                "policy_check": [],
+                "completed_steps": ["request_analysis", "price_check"],
+                "demo_mode": False,
+                "payment_status": "verification_failed",
+            }
+        real_payment = True
+        wallet_connected = True
+        try:
+            wallet_balance_value = await get_onchain_usdc_balance(payer_address)
+        except Exception:
+            logger.exception("결제 검증 후 잔액 조회 실패")
+            wallet_balance_value = 0.0
+    else:
+        wallet_connected = payload.wallet.connected
+        wallet_balance_value = payload.wallet.balance
+        if wallet_balance_value is None and payload.wallet.public_key:
+            try:
+                wallet_balance_value = await get_onchain_usdc_balance(payload.wallet.public_key)
+            except Exception:
+                logger.exception("Demo wallet balance lookup failed; policy will fail safely")
+                wallet_balance_value = 0.0
+
+    policy_payload = {
+        "amount": GEMINI_PRICE_USD,
+        "category": "gemini",
+        "wallet_connected": wallet_connected,
+        "wallet_balance": wallet_balance_value or 0.0,
+        "api_key_valid": bool(GEMINI_API_KEY),
+        "recipient_address": SOLANA_WALLET_ADDRESS,
+        "request_id": request_id,
+        "ai_consecutive_failures": _consecutive_failures,
+        "has_required_permission": True,
+        "infra_stable": True,
+        "user_prompt": payload.prompt,
+        "task_plan": payload.task_plan or payload.prompt,
+    }
+
+    try:
+        url = f"{POLICY_ENGINE_URL.rstrip('/')}/evaluate"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(url, json=policy_payload)
+            response.raise_for_status()
+            decision = response.json()
+    except Exception as exc:
+        _consecutive_failures += 1
+        logger.exception("Demo policy evaluation failed")
+        raise HTTPException(status_code=502, detail="Policy server is unavailable.") from exc
+
+    if not decision.get("approved"):
+        _consecutive_failures += 1
+        reason = decision.get("reason", "The policy engine rejected this request.")
+        if real_payment:
+            # 결제는 이미 온체인에서 확정된 뒤라 되돌릴 수 없다. 정책 판단은 이 결제를
+            # "쓸 자격이 있는 요청인지" 사후 검증하는 것이라, 여기서 거부되면 실제로
+            # 돈은 나갔는데 서비스는 제공되지 않는 상황이 된다 (알려진 한계, README 참고).
+            reason = f"{reason} (결제는 이미 완료되었으나 서비스 제공은 거부되었습니다)"
+        return {
+            "approved": False,
+            "status": "rejected",
+            "reason": reason,
+            "rejected_stage": "policy_check",
+            "request_id": request_id,
+            "category": "gemini",
+            "amount": GEMINI_PRICE_USD,
+            "policy_check": decision.get("policy_check", []),
+            "completed_steps": ["request_analysis", "price_check", "payment"] if real_payment else ["request_analysis", "price_check"],
+            "demo_mode": not real_payment,
+            "payment_status": "charged_but_rejected" if real_payment else "not_charged_demo",
+            "transaction_signature": payload.transaction_signature or "",
+        }
+
+    try:
+        gemini_result = await call_gemini_api(payload.prompt, payload.task_plan or payload.prompt)
+        chain_result = _extract_chain_result(gemini_result)
+    except HTTPException:
+        _consecutive_failures += 1
+        raise
+    except Exception as exc:
+        _consecutive_failures += 1
+        logger.exception("Gemini execution failed")
+        raise HTTPException(status_code=502, detail="Gemini execution failed.") from exc
+
+    _consecutive_failures = 0
+    return {
+        "approved": True,
+        "status": "completed",
+        "answer": chain_result["answer"],
+        "task_complete": chain_result["task_complete"],
+        "next_prompt": chain_result["next_prompt"],
+        "request_id": request_id,
+        "category": "gemini",
+        "amount": GEMINI_PRICE_USD,
+        "policy_check": decision.get("policy_check", []),
+        "payment_status": "confirmed" if real_payment else "demo_not_charged",
+        "transaction_signature": payload.transaction_signature or "",
+        "completed_steps": [
+            "request_analysis",
+            "price_check",
+            "policy_check",
+            "payment",
+            "onchain_confirmation",
+            "api_execution",
+            "result_delivery",
+        ],
+        "demo_mode": not real_payment,
+        "demo_notice": None if real_payment else "Demo mode: policy was evaluated, but no USDC payment was signed or transferred.",
+    }
+
 @app.post("/api/gemini")
 async def call_gemini(payload: GeminiRequestIn, request: Request) -> dict:
     decision = await call_policy_engine(request, payload.prompt, payload.task_plan)

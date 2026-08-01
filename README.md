@@ -42,6 +42,8 @@ cp .env.example .env
 | `SOLANA_RPC_URL` | Solana Devnet RPC (온체인 USDC 잔액 조회용) |
 | `FACILITATOR_URL` | x402 결제 검증/정산 대행 서비스 |
 | `GEMINI_PRICE_USD` | Gemini 1회 호출당 청구 금액 |
+| `DEMO_MODE` | 프론트엔드용 `/execute` 엔드포인트 활성화 여부 (기본 `true`) |
+| `CORS_ORIGINS` | 프론트엔드(`index.html`)가 다른 포트에서 API를 호출할 수 있게 허용할 origin (기본 `*`) |
 
 `GEMINI_API_KEY`가 없어도 `policy_server.py`는 뜨지만, `user_prompt`가 포함된 요청은
 전부 자동 거부(fail-safe)된다.
@@ -80,13 +82,40 @@ python policy_engine.py    # 레이어1(하드 규칙) 시나리오 10개
 python semantic_layer.py   # 레이어2(LLM 의미판단), GEMINI_API_KEY 필요
 ```
 
+## 6. 프론트엔드 (로봇 친구)
+
+두 서버(8000, 3000) 띄운 상태에서 정적 파일 서버를 하나 더 띄운다.
+
+```bash
+python -m http.server 5500
+```
+
+브라우저에서 http://localhost:5500 접속 → 설정에서 Phantom 지갑 연결 → 목표 입력 후 실행하면
+실제로 Phantom 서명 팝업이 뜨고, 승인하면 진짜 devnet USDC가 이동한다 (데모용으로 결제를
+건너뛰고 싶으면 지갑을 연결하지 않은 채로 실행 — `/execute`가 정책 판단만 보여주는 데모 모드로 대체됨).
+
+## 7. Pay.sh 공식 CLI로 검증
+
+`main.py`는 x402 프로토콜을 표준대로 구현해서, Google Cloud × Solana Foundation의 공식 결제 CLI인
+[Pay.sh](https://github.com/solana-foundation/pay)로도 서버 코드 수정 없이 그대로 결제된다.
+설치·검증 방법은 [tools/paysh/README.md](tools/paysh/README.md) 참고.
+
+```bash
+tools/paysh/pay.exe curl -X POST http://localhost:3000/api/gemini \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"...", "task_plan":"..."}'
+```
+
 ## 구조
 
 | 파일 | 역할 |
 |---|---|
-| `main.py` | 백엔드(게임 친구) — x402 결제 미들웨어, 온체인 USDC 잔액 조회, 실제 Gemini 호출. `POST /api/gemini` |
+| `main.py` | 백엔드(게임 친구) — x402 결제 미들웨어, 온체인 USDC 잔액 조회, 실제 Gemini 호출. `POST /api/gemini`, `POST /execute`(프론트 데모용), `GET /config`, `GET /wallet/balance` |
 | `policy_server.py` | AI 친구 — FastAPI 서버, `POST /evaluate` 엔드포인트 (정책 판단 레이어1+레이어2 오케스트레이션) |
 | `policy_engine.py` | Layer 1 — 하드 규칙(한도, 카테고리, 지갑상태 등) |
 | `semantic_layer.py` | Layer 2 — Gemini 기반 의미 판단(목적이탈, 인젝션, 민감정보, 반복호출) |
+| `demo_chain.py` | 실제 Solana 지갑(키페어)으로 서명해서 `/api/gemini`를 연쇄 호출하는 Python 데모 클라이언트 |
+| `index.html` / `style.css` / `script.js` | 로봇 친구가 만든 프론트엔드. Phantom 지갑으로 실제 결제 서명까지 수행 |
+| `tools/paysh/` | Pay.sh 공식 CLI 연동 검증 (설치법·실제 결제 테스트 기록) |
 | `project.md` | 전체 기획/아키텍처/진행상황 문서 |
 | `BACKEND_연동_가이드.md` | 백엔드가 `/evaluate` 요청 필드를 채우는 방법 상세 |
