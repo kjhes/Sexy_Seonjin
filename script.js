@@ -364,7 +364,7 @@ async function handleStart() {
 
     안전장치: MAX_CHAIN_STEPS에 도달하면 강제로 멈춘다.
 */
-const MAX_CHAIN_STEPS = 5;
+const MAX_CHAIN_STEPS = 3;
 
 async function executeUserRequest(goal) {
     const backendUrl =
@@ -508,12 +508,50 @@ async function runSingleChainCall(
 
     completeProcessStep(1);
 
+    activateProcessStep(2);
+
+    let prepared;
+    try {
+        const prepareResponse = await fetch(
+            `${backendUrl}/execute/prepare`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    prompt,
+                    plan_steps: planSteps,
+                    plan_step_status: planStepStatus,
+                    wallet: {
+                        connected: appState.walletConnected,
+                        public_key: appState.walletPublicKey,
+                        balance: appState.walletBalance
+                    }
+                })
+            }
+        );
+        prepared = await prepareResponse.json();
+        if (!prepareResponse.ok || prepared.approved === false) {
+            failProcessStep(2, "정책 거절");
+            showRejectedResult(
+                prepared.reason || prepared.detail || "정책 검사에서 요청이 거절되었습니다."
+            );
+            return null;
+        }
+    } catch (error) {
+        failProcessStep(2, "정책 검사 실패");
+        showSystemError(error.message || "정책 사전 검사에 실패했습니다.");
+        return null;
+    }
+
+    appState.currentRequestId = prepared.request_id;
+    completeProcessStep(2);
+
     if (shouldPayForReal) {
         activateProcessStep(3);
 
         try {
             transactionSignature =
-                await payForGeminiCall(backendUrl);
+                await payForGeminiCall(backendUrl, prepared);
 
             completeProcessStep(3);
 
@@ -531,10 +569,6 @@ async function runSingleChainCall(
             return null;
         }
     }
-
-    // 매 단계마다 새 request_id를 써야 한다 (같은 id를 재사용하면 중복 결제로 거절됨).
-    appState.currentRequestId =
-        createRequestId();
 
     const payload = {
         prompt,
@@ -1615,7 +1649,7 @@ function loadSolanaLibraries() {
     서명(signature)을 돌려준다. 이 값을 /execute에 그대로 실어 보내면
     백엔드가 온체인에서 직접 재검증한다 (main.py의 verify_onchain_usdc_payment).
 */
-async function payForGeminiCall(backendUrl) {
+async function payForGeminiCall(backendUrl, prepared) {
     const provider =
         window?.phantom?.solana;
 
@@ -1657,7 +1691,7 @@ async function payForGeminiCall(backendUrl) {
 
     const recipient =
         new web3.PublicKey(
-            config.recipient_address
+            prepared.recipient_address
         );
 
     const payer =
@@ -1684,7 +1718,7 @@ async function payForGeminiCall(backendUrl) {
     // 0.005 * 10^6 = 5000을 만들어야 한다. 10 ** config.decimals는 "10의 decimals제곱".
     const amountRaw =
         Math.round(
-            config.price_usd *
+            prepared.amount *
             10 ** config.decimals
         );
 

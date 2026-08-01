@@ -22,6 +22,9 @@
 # json: 파이썬 딕셔너리 <-> JSON 문자열을 서로 변환해주는 표준 라이브러리.
 # Gemini 응답 안에 JSON 문자열로 박혀 있는 값을 다시 파이썬 객체로 꺼낼 때(json.loads) 씀.
 import json
+import asyncio
+from collections import defaultdict, deque
+from datetime import date
 # logging: print() 대신 쓰는 정식 로그 기록 도구. "언제, 어디서, 무슨 일이 있었는지"를
 # 레벨(INFO/ERROR 등)별로 남길 수 있어서 서버 코드에서는 print보다 이걸 표준으로 쓴다.
 import logging
@@ -30,6 +33,7 @@ import os
 # uuid: 절대 겹치지 않는 고유한 식별자(ID)를 만들어주는 라이브러리.
 # 결제 요청마다 이 값을 하나씩 붙여서 "같은 요청 두 번 처리" 같은 사고를 막는다.
 import uuid
+import time
 
 # httpx: 다른 서버에게 HTTP 요청(GET/POST)을 보낼 때 쓰는 외부 패키지.
 # 이 서버 자신도 클라이언트가 되어서 Solana RPC, 정책 엔진, Gemini API 등
@@ -110,6 +114,14 @@ if not SOLANA_WALLET_ADDRESS:
 if not POLICY_ENGINE_URL:
     raise RuntimeError("POLICY_ENGINE_URL 환경변수가 필요합니다 (AI 친구 /evaluate 서버 주소)")
 
+POLICY_SHARED_SECRET = os.getenv('POLICY_SHARED_SECRET')
+MAX_CHAIN_STEPS = 3
+IP_REQUESTS_PER_MINUTE = 10
+DAILY_GEMINI_CALL_LIMIT = 100
+PREPARE_TTL_SECONDS = 300
+if not POLICY_SHARED_SECRET:
+    raise RuntimeError('POLICY_SHARED_SECRET 환경변수가 필요합니다')
+
 # 우리가 결제를 받을 네트워크를 Solana Devnet으로 고정.
 SVM_NETWORK: Network = SOLANA_DEVNET_CAIP2  # "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
 
@@ -165,7 +177,7 @@ app.add_middleware(PaymentMiddlewareASGI, routes=routes, server=resource_server)
 # FastAPI가 요청 JSON을 자동으로 이 모양에 맞춰 검증·변환해준다.
 # ---------------------------------------------------------------------------
 class GeminiRequestIn(BaseModel):
-    prompt: str
+    prompt: str = Field(min_length=5, max_length=500)
     # 체인의 첫 호출이면 둘 다 비워서 보낸다 (Gemini가 목표를 분석해 계획을 새로 만듦).
     # 두 번째 호출부터는 직전 응답의 plan_steps/plan_step_status를 그대로 echo해서 보내야
     # 계획이 잠긴 채로 이어진다.
@@ -180,7 +192,7 @@ class DemoWalletIn(BaseModel):
 
 
 class ExecuteRequestIn(BaseModel):
-    prompt: str
+    prompt: str = Field(min_length=5, max_length=500)
     request_id: str | None = None
     plan_steps: list[str] | None = None
     plan_step_status: list[bool] | None = None
@@ -193,9 +205,50 @@ class ExecuteRequestIn(BaseModel):
     transaction_signature: str | None = None
 
 
+class PrepareRequestIn(BaseModel):
+    prompt: str = Field(min_length=5, max_length=500)
+    plan_steps: list[str] | None = None
+    plan_step_status: list[bool] | None = None
+    wallet: DemoWalletIn = Field(default_factory=DemoWalletIn)
+
+
 # AI 소비자별 연속 실패 횟수 (BACKEND_연동_가이드.md의 ai_consecutive_failures).
 # 단일 프로세스 데모 서버라 프로세스 메모리에 카운터를 둔다.
 _consecutive_failures = 0
+_prepared_requests: dict[str, dict] = {}
+_prepare_lock = asyncio.Lock()
+_ip_request_times: dict[str, deque[float]] = defaultdict(deque)
+_daily_usage = {'date': date.today(), 'count': 0}
+
+
+def _validate_chain_state(plan_steps: list[str] | None, plan_step_status: list[bool] | None) -> None:
+    if plan_steps is not None and len(plan_steps) > MAX_CHAIN_STEPS:
+        raise HTTPException(status_code=422, detail=f'AI 연속 단계는 최대 {MAX_CHAIN_STEPS}개입니다.')
+    if plan_step_status is not None and plan_steps is not None and len(plan_step_status) != len(plan_steps):
+        raise HTTPException(status_code=422, detail='plan_steps와 plan_step_status 길이가 일치해야 합니다.')
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else 'unknown'
+
+
+def _enforce_ip_rate_limit(request: Request) -> None:
+    now = time.monotonic()
+    bucket = _ip_request_times[_client_ip(request)]
+    while bucket and now - bucket[0] >= 60:
+        bucket.popleft()
+    if len(bucket) >= IP_REQUESTS_PER_MINUTE:
+        raise HTTPException(status_code=429, detail='요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.')
+    bucket.append(now)
+
+
+def _consume_daily_gemini_quota() -> None:
+    today = date.today()
+    if _daily_usage['date'] != today:
+        _daily_usage.update(date=today, count=0)
+    if _daily_usage['count'] >= DAILY_GEMINI_CALL_LIMIT:
+        raise HTTPException(status_code=429, detail='서버의 일일 AI 호출 한도에 도달했습니다.')
+    _daily_usage['count'] += 1
 
 
 # @app.get("/health"): "GET /health 요청이 오면 바로 아래 함수를 실행해라"는 표시(데코레이터).
@@ -502,7 +555,11 @@ async def call_policy_engine(
     url = f"{POLICY_ENGINE_URL.rstrip('/')}/evaluate"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(url, json=body)
+            resp = await client.post(
+                url,
+                json=body,
+                headers={'X-Policy-Secret': POLICY_SHARED_SECRET},
+            )
             resp.raise_for_status()
             decision = resp.json()
     except Exception:
@@ -532,7 +589,7 @@ _FIRST_CALL_INSTRUCTION = """너는 자율 에이전트 체인의 첫 단계를 
 
 사용자의 목표: "{prompt}"
 
-1. 이 목표를 달성하기 위해 필요한 구체적이고 유한한 단계들로 나눠라(1개~5개 정도,
+1. 이 목표를 달성하기 위해 필요한 구체적이고 유한한 단계들로 나눠라(1개~3개 정도,
    목표가 한 번에 끝나면 1개만). 이 목록은 지금 한 번만 정하고 이후 절대 바뀌지 않는다.
 2. 목표(또는 그 일부)에 실제로 답하라.
 3. 이번 답변으로 위 각 단계가 충족됐는지 하나씩 판단하라.
@@ -651,8 +708,8 @@ def _extract_chain_result(
 
     # 계획은 첫 호출에서 온 것만 채택한다. 이후 호출에서 모델이 뭘 보내든(스키마상 안 보내지만
     # 방어적으로) 무시하고 이미 잠긴 prior_plan_steps를 그대로 쓴다 — 재계획 여지를 코드 레벨에서 차단.
-    plan_steps = prior_plan_steps or parsed.get("plan_steps") or []
-    latest_status = [bool(v) for v in parsed.get("plan_step_status", [])]
+    plan_steps = (prior_plan_steps or parsed.get("plan_steps") or [])[:MAX_CHAIN_STEPS]
+    latest_status = [bool(v) for v in parsed.get("plan_step_status", [])][:MAX_CHAIN_STEPS]
     # 길이가 안 맞으면(모델이 스키마를 어겼거나 계획이 비어있으면) 안전하게 전부 미완료로 취급한다.
     if len(latest_status) != len(plan_steps):
         latest_status = [False] * len(plan_steps)
@@ -673,28 +730,142 @@ def _extract_chain_result(
 
 
 # ---------------------------------------------------------------------------
-# 메인 라우트: 결제(x402 미들웨어, 이미 통과) -> 승인(정책 엔진) -> 실행(Gemini)
+# 메인 라우트: 정책 사전 승인 -> 결제 검증 -> 실행(Gemini)
 # ---------------------------------------------------------------------------
+def _approval_snapshot(payload: PrepareRequestIn | ExecuteRequestIn) -> dict:
+    return {
+        'prompt': payload.prompt,
+        'plan_steps': payload.plan_steps,
+        'plan_step_status': payload.plan_step_status,
+    }
+
+
+@app.post('/execute/prepare')
+async def prepare_execute(payload: PrepareRequestIn, request: Request) -> dict:
+    global _consecutive_failures
+    if not DEMO_MODE:
+        raise HTTPException(status_code=503, detail='The demo payment endpoint is disabled.')
+    _enforce_ip_rate_limit(request)
+    _validate_chain_state(payload.plan_steps, payload.plan_step_status)
+
+    wallet_balance = payload.wallet.balance
+    if wallet_balance is None and payload.wallet.public_key:
+        try:
+            wallet_balance = await get_onchain_usdc_balance(payload.wallet.public_key)
+        except Exception:
+            logger.exception('Prepare wallet balance lookup failed')
+            wallet_balance = 0.0
+
+    request_id = str(uuid.uuid4())
+    policy_payload = {
+        'amount': GEMINI_PRICE_USD,
+        'category': 'gemini',
+        'wallet_connected': payload.wallet.connected,
+        'wallet_balance': wallet_balance or 0.0,
+        'api_key_valid': bool(GEMINI_API_KEY),
+        'recipient_address': SOLANA_WALLET_ADDRESS,
+        'request_id': request_id,
+        'ai_consecutive_failures': _consecutive_failures,
+        'has_required_permission': True,
+        'infra_stable': True,
+        'user_prompt': _semantic_check_prompt(payload.prompt, payload.plan_steps, payload.plan_step_status),
+        'task_plan': _plan_steps_to_text(payload.plan_steps),
+    }
+    try:
+        url = POLICY_ENGINE_URL.rstrip('/') + '/evaluate'
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                url,
+                json=policy_payload,
+                headers={'X-Policy-Secret': POLICY_SHARED_SECRET},
+            )
+            response.raise_for_status()
+            decision = response.json()
+    except Exception as exc:
+        _consecutive_failures += 1
+        logger.exception('Prepare policy evaluation failed')
+        raise HTTPException(status_code=502, detail='Policy server is unavailable.') from exc
+
+    if not decision.get('approved'):
+        _consecutive_failures += 1
+        return {
+            'approved': False,
+            'status': 'rejected',
+            'reason': decision.get('reason', 'The policy engine rejected this request.'),
+            'rejected_stage': 'policy_check',
+            'request_id': request_id,
+            'amount': GEMINI_PRICE_USD,
+            'policy_check': decision.get('policy_check', []),
+            'payment_status': 'not_charged',
+        }
+
+    _consecutive_failures = 0
+    _consume_daily_gemini_quota()
+    async with _prepare_lock:
+        now = time.monotonic()
+        expired = [key for key, value in _prepared_requests.items() if value['expires_at'] <= now]
+        for key in expired:
+            _prepared_requests.pop(key, None)
+        _prepared_requests[request_id] = {
+            'expires_at': now + PREPARE_TTL_SECONDS,
+            'snapshot': _approval_snapshot(payload),
+            'decision': decision,
+            'status': 'approved',
+        }
+
+    return {
+        'approved': True,
+        'status': 'prepared',
+        'request_id': request_id,
+        'amount': GEMINI_PRICE_USD,
+        'recipient_address': SOLANA_WALLET_ADDRESS,
+        'network': 'solana-devnet',
+        'asset': 'USDC',
+        'policy_check': decision.get('policy_check', []),
+        'expires_in': PREPARE_TTL_SECONDS,
+        'completed_steps': ['request_analysis', 'price_check', 'policy_check'],
+    }
+
+
 @app.post("/execute")
-async def execute_demo(payload: ExecuteRequestIn) -> dict:
+async def execute_demo(payload: ExecuteRequestIn, request: Request) -> dict:
     """Frontend orchestration adapter.
 
-    payload.transaction_signature가 있으면 브라우저(Phantom)가 실제로 서명해서
-    제출한 devnet USDC 결제를 온체인에서 직접 검증하고, 그 결과(진짜 지갑 주소·
-    진짜 잔액)로 정책 판단을 돌린다. 서명이 없으면 기존 데모(미결제) 경로로 처리한다.
+    /execute/prepare에서 발급한 일회성 승인을 먼저 확인한다. Phantom 서명이 있으면
+    devnet USDC 결제를 온체인에서 검증하고, 서명이 없으면 데모(미결제)로 처리한 뒤
+    Gemini를 실행한다. 이 단계에서는 정책을 다시 판단해 결제 후 거절하지 않는다.
     """
     global _consecutive_failures
 
     if not DEMO_MODE:
         raise HTTPException(status_code=503, detail="The demo payment endpoint is disabled.")
 
-    request_id = payload.request_id or str(uuid.uuid4())
+    _validate_chain_state(payload.plan_steps, payload.plan_step_status)
+    if not payload.request_id:
+        raise HTTPException(status_code=400, detail='사전 승인 request_id가 필요합니다.')
+
+    request_id = payload.request_id
+    async with _prepare_lock:
+        approval = _prepared_requests.get(request_id)
+        if not approval or approval['expires_at'] <= time.monotonic():
+            _prepared_requests.pop(request_id, None)
+            raise HTTPException(status_code=403, detail='사전 승인이 없거나 만료되었습니다.')
+        if approval['status'] != 'approved':
+            raise HTTPException(status_code=409, detail='이미 사용 중이거나 사용된 사전 승인입니다.')
+        if approval['snapshot'] != _approval_snapshot(payload):
+            raise HTTPException(status_code=403, detail='사전 승인된 요청 내용과 일치하지 않습니다.')
+        approval['status'] = 'processing'
+
+    decision = approval['decision']
     real_payment = False
 
     if payload.transaction_signature:
         payer_address = await verify_onchain_usdc_payment(payload.transaction_signature, GEMINI_PRICE_USD)
         if payer_address is None:
             _consecutive_failures += 1
+            async with _prepare_lock:
+                if request_id in _prepared_requests:
+                    _prepared_requests[request_id]['status'] = 'approved'
             return {
                 "approved": False,
                 "status": "rejected",
@@ -710,70 +881,9 @@ async def execute_demo(payload: ExecuteRequestIn) -> dict:
                 "payment_status": "verification_failed",
             }
         real_payment = True
-        wallet_connected = True
-        try:
-            wallet_balance_value = await get_onchain_usdc_balance(payer_address)
-        except Exception:
-            logger.exception("결제 검증 후 잔액 조회 실패")
-            wallet_balance_value = 0.0
-    else:
-        wallet_connected = payload.wallet.connected
-        wallet_balance_value = payload.wallet.balance
-        if wallet_balance_value is None and payload.wallet.public_key:
-            try:
-                wallet_balance_value = await get_onchain_usdc_balance(payload.wallet.public_key)
-            except Exception:
-                logger.exception("Demo wallet balance lookup failed; policy will fail safely")
-                wallet_balance_value = 0.0
 
-    policy_payload = {
-        "amount": GEMINI_PRICE_USD,
-        "category": "gemini",
-        "wallet_connected": wallet_connected,
-        "wallet_balance": wallet_balance_value or 0.0,
-        "api_key_valid": bool(GEMINI_API_KEY),
-        "recipient_address": SOLANA_WALLET_ADDRESS,
-        "request_id": request_id,
-        "ai_consecutive_failures": _consecutive_failures,
-        "has_required_permission": True,
-        "infra_stable": True,
-        "user_prompt": _semantic_check_prompt(payload.prompt, payload.plan_steps, payload.plan_step_status),
-        "task_plan": _plan_steps_to_text(payload.plan_steps),
-    }
-
-    try:
-        url = f"{POLICY_ENGINE_URL.rstrip('/')}/evaluate"
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(url, json=policy_payload)
-            response.raise_for_status()
-            decision = response.json()
-    except Exception as exc:
-        _consecutive_failures += 1
-        logger.exception("Demo policy evaluation failed")
-        raise HTTPException(status_code=502, detail="Policy server is unavailable.") from exc
-
-    if not decision.get("approved"):
-        _consecutive_failures += 1
-        reason = decision.get("reason", "The policy engine rejected this request.")
-        if real_payment:
-            # 결제는 이미 온체인에서 확정된 뒤라 되돌릴 수 없다. 정책 판단은 이 결제를
-            # "쓸 자격이 있는 요청인지" 사후 검증하는 것이라, 여기서 거부되면 실제로
-            # 돈은 나갔는데 서비스는 제공되지 않는 상황이 된다 (알려진 한계, README 참고).
-            reason = f"{reason} (결제는 이미 완료되었으나 서비스 제공은 거부되었습니다)"
-        return {
-            "approved": False,
-            "status": "rejected",
-            "reason": reason,
-            "rejected_stage": "policy_check",
-            "request_id": request_id,
-            "category": "gemini",
-            "amount": GEMINI_PRICE_USD,
-            "policy_check": decision.get("policy_check", []),
-            "completed_steps": ["request_analysis", "price_check", "payment"] if real_payment else ["request_analysis", "price_check"],
-            "demo_mode": not real_payment,
-            "payment_status": "charged_but_rejected" if real_payment else "not_charged_demo",
-            "transaction_signature": payload.transaction_signature or "",
-        }
+    async with _prepare_lock:
+        _prepared_requests.pop(request_id, None)
 
     try:
         gemini_result = await call_gemini_api(payload.prompt, payload.plan_steps, payload.plan_step_status)
@@ -816,6 +926,8 @@ async def execute_demo(payload: ExecuteRequestIn) -> dict:
 
 @app.post("/api/gemini")
 async def call_gemini(payload: GeminiRequestIn, request: Request) -> dict:
+    _enforce_ip_rate_limit(request)
+    _validate_chain_state(payload.plan_steps, payload.plan_step_status)
     decision = await call_policy_engine(request, payload.prompt, payload.plan_steps, payload.plan_step_status)
 
     if not decision.get("approved"):
@@ -824,6 +936,7 @@ async def call_gemini(payload: GeminiRequestIn, request: Request) -> dict:
             detail=decision.get("reason", "정책 엔진이 이 결제를 거부했습니다"),
         )
 
+    _consume_daily_gemini_quota()
     gemini_result = await call_gemini_api(payload.prompt, payload.plan_steps, payload.plan_step_status)
     chain_result = _extract_chain_result(gemini_result, payload.plan_steps, payload.plan_step_status)
 

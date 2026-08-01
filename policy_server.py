@@ -10,13 +10,14 @@ main.py는 백엔드 친구의 x402 결제 서버가 차지하고 있어서, 이
 """
 
 import os
+import hmac
 # typing.Optional[str]은 "str이거나 None"이라는 뜻. 파이썬 최신 문법으로는
 # "str | None"이라고도 쓰는데(main.py에서 그 스타일을 씀), 이 파일은 옛날 스타일인
 # Optional을 쓰고 있다 — 의미는 완전히 같다.
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 # 다른 파일(policy_engine.py)에 정의해둔 클래스/데이터 모양들을 가져온다.
@@ -26,6 +27,10 @@ from policy_engine import PaymentRequest, PolicyConfig, PolicyEngine, RequestGua
 from semantic_layer import SemanticGuard
 
 load_dotenv()
+
+POLICY_SHARED_SECRET = os.getenv("POLICY_SHARED_SECRET")
+if not POLICY_SHARED_SECRET:
+    raise RuntimeError("POLICY_SHARED_SECRET 환경변수가 필요합니다")
 
 app = FastAPI(title="Agentic Commerce Policy Engine")
 
@@ -73,7 +78,12 @@ class PaymentRequestIn(BaseModel):
 # 일(policy_engine 계산, semantic_guard.check())이 네트워크 대기 없이 그 자리에서 바로
 # 끝나는 동기(sync) 작업이라 async가 필요 없다 — FastAPI가 알아서 별도 스레드에서 돌려준다.
 @app.post("/evaluate")
-def evaluate(req: PaymentRequestIn):
+def evaluate(
+    req: PaymentRequestIn,
+    x_policy_secret: str | None = Header(default=None),
+):
+    if not x_policy_secret or not hmac.compare_digest(x_policy_secret, POLICY_SHARED_SECRET):
+        raise HTTPException(status_code=401, detail="Unauthorized policy request")
     # req는 pydantic 모델(PaymentRequestIn) 객체다. .model_dump()는 그걸 평범한
     # 파이썬 딕셔너리로 바꿔준다. 그 앞의 별표 두 개(**)는 "이 딕셔너리를 풀어헤쳐서
     # key=value 형태의 인자들로 나눠 넣어라"는 뜻 — 즉
