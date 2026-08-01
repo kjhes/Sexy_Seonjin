@@ -1,4 +1,4 @@
-# Sexy_Seonjin
+# Google-X-Solana-AI-Agentic-Hackathon
 
 Google Cloud × Solana Foundation Agentic Commerce 해커톤 — AI 결제 정책 판단 엔진
 
@@ -9,8 +9,8 @@ Google Cloud × Solana Foundation Agentic Commerce 해커톤 — AI 결제 정�
 ## 1. 클론
 
 ```bash
-git clone https://github.com/kjhes/Sexy_Seonjin.git
-cd Sexy_Seonjin
+git clone https://github.com/dodo323232/Google-X-Solana-AI-Agentic-Hackathon.git
+cd Google-X-Solana-AI-Agentic-Hackathon
 ```
 
 ## 2. 설치
