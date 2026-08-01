@@ -22,11 +22,14 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from solders.keypair import Keypair
 
+from x402.client import x402Client
 from x402.http import FacilitatorConfig, HTTPFacilitatorClient, PaymentOption, RouteConfig
+from x402.http.clients.httpx import wrapHttpxWithPayment
 from x402.http.middleware.fastapi import PaymentMiddlewareASGI
 from x402.mechanisms.svm.constants import SOLANA_DEVNET_CAIP2, USDC_DEVNET_ADDRESS
-from x402.mechanisms.svm.exact import ExactSvmServerScheme
+from x402.mechanisms.svm.exact import ExactSvmServerScheme, register_exact_svm_client
 from x402.mechanisms.svm.types import ExactSvmPayload
 from x402.mechanisms.svm.utils import decode_transaction_from_payload, extract_transaction_info
 from x402.schemas import Network
@@ -48,6 +51,11 @@ FACILITATOR_URL = os.getenv("FACILITATOR_URL", "https://x402.org/facilitator")
 GEMINI_PRICE_USD = float(os.getenv("GEMINI_PRICE_USD", "0.005"))
 DEMO_MODE = os.getenv("DEMO_MODE", "true").lower() in {"1", "true", "yes", "on"}
 CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "*").split(",") if origin.strip()]
+# "Agent Wallet" 결제 방식(프론트 settings의 'agent' 옵션)이 자율로 서명할 전용 지갑.
+# 사용자의 Phantom 지갑과 별개로, 이 서버 프로세스가 개인키를 직접 들고 있는 devnet 전용
+# 지갑이다 — 그래서 결제할 때 사람이 승인 팝업을 누를 필요가 없다(demo_chain.py와 동일한 방식).
+AGENT_WALLET_PATH = os.getenv("AGENT_WALLET_PATH", "agent_wallet.json")
+SELF_BASE_URL = os.getenv("SELF_BASE_URL", "http://127.0.0.1:3000")
 
 if not SOLANA_WALLET_ADDRESS:
     raise RuntimeError("SOLANA_WALLET_ADDRESS 환경변수가 필요합니다 (.env 확인)")
@@ -113,11 +121,192 @@ class ExecuteRequestIn(BaseModel):
     # 프론트에서 Phantom으로 실제 서명해서 제출한 devnet USDC 결제 트랜잭션 서명.
     # 채워져 있으면 온체인에서 직접 검증하고, 없으면 기존 데모(미결제) 경로로 처리한다.
     transaction_signature: str | None = None
+    # true면 Phantom 서명 팝업 없이, 서버가 들고 있는 Agent Wallet이 정책 통과 시
+    # 스스로 서명·결제한다 (진짜 자율 결제 경로. 아래 "Agent Wallet 자율 결제" 참고).
+    use_agent_wallet: bool = False
 
 
 # AI 소비자별 연속 실패 횟수 (BACKEND_연동_가이드.md의 ai_consecutive_failures).
 # 단일 프로세스 데모 서버라 프로세스 메모리에 카운터를 둔다.
 _consecutive_failures = 0
+
+
+# ---------------------------------------------------------------------------
+# Agent Wallet 자율 결제 — Phantom(사람 승인 팝업) 없이 서버가 직접 서명한다.
+#
+# Phantom 같은 브라우저 지갑 확장은 보안모델 자체가 "웹사이트가 몰래 서명 못 하게"
+# 사람의 클릭을 강제한다 — 그래서 Phantom 결제 방식으론 원천적으로 완전 자율 결제를
+# 보여줄 수 없다. 이 서버가 자기 전용 devnet 지갑(개인키를 직접 들고 있음)으로 서명하면
+# 그 제약이 없어진다: demo_chain.py가 별도 Python 프로세스로 증명했던 것과 동일한 방식을,
+# 웹 UI에서 "Agent Wallet" 결제 방식을 고르면 이 서버가 대신 수행한다.
+#
+# 실제 x402 핸드셰이크(402 -> 서명 -> 재요청 -> 정산)를 처음부터 새로 구현하지 않고,
+# 이미 검증된 /api/gemini 라우트를 서버 자신이 x402 클라이언트로 호출하는 방식으로
+# 재사용한다 (핸드셰이크 로직 중복 없음).
+# ---------------------------------------------------------------------------
+class _LocalKeypairSigner:
+    """x402의 ClientSvmSigner 프로토콜을 로컬 Keypair로 구현한 것 (demo_chain.py와 동일)."""
+
+    def __init__(self, kp: Keypair):
+        self._kp = kp
+
+    @property
+    def address(self) -> str:
+        return str(self._kp.pubkey())
+
+    @property
+    def keypair(self) -> Keypair:
+        return self._kp
+
+    def sign_transaction(self, tx):
+        tx.sign([self._kp])
+        return tx
+
+
+_agent_keypair: Keypair | None = None
+
+
+def _get_agent_keypair() -> Keypair:
+    """Agent Wallet 개인키를 로드한다. 없으면 새로 만들어서 로컬 파일에 저장한다.
+
+    이 파일은 .gitignore에 포함되어 있어 커밋되지 않는다. Devnet 전용이라 실제
+    자산 가치는 없지만, 이 서버 프로세스만 접근 가능한 로컬 파일에만 존재하고
+    프론트엔드나 API 응답으로는 절대 노출하지 않는다(주소만 노출한다).
+    """
+    global _agent_keypair
+    if _agent_keypair is not None:
+        return _agent_keypair
+
+    if os.path.exists(AGENT_WALLET_PATH):
+        with open(AGENT_WALLET_PATH) as f:
+            _agent_keypair = Keypair.from_bytes(bytes(json.load(f)))
+    else:
+        _agent_keypair = Keypair()
+        with open(AGENT_WALLET_PATH, "w") as f:
+            json.dump(list(bytes(_agent_keypair)), f)
+        logger.info("새 Agent Wallet 생성됨: %s (Devnet SOL/USDC 충전 필요)", _agent_keypair.pubkey())
+
+    return _agent_keypair
+
+
+async def call_gemini_via_agent_wallet(
+    prompt: str,
+    plan_steps: list[str] | None,
+    plan_step_status: list[bool] | None,
+) -> dict:
+    """Agent Wallet이 사람 승인 없이 스스로 서명해서 /api/gemini를 호출한다.
+
+    반환값의 "data"는 /api/gemini의 성공 응답 그대로이고, "transaction_signature"는
+    실제로 정산된 온체인 트랜잭션 서명이다(결제가 거부/실패해 정산이 안 되면 빈 문자열).
+    """
+    keypair = _get_agent_keypair()
+    client = x402Client()
+    register_exact_svm_client(client, _LocalKeypairSigner(keypair))
+
+    settled: dict = {}
+
+    def _capture_settlement(ctx):
+        if ctx.settle_response is not None:
+            settled["transaction"] = ctx.settle_response.transaction
+        return None
+
+    client.on_payment_response(_capture_settlement)
+
+    async with wrapHttpxWithPayment(client, timeout=90.0) as http:
+        resp = await http.post(
+            f"{SELF_BASE_URL}/api/gemini",
+            json={
+                "prompt": prompt,
+                "plan_steps": plan_steps,
+                "plan_step_status": plan_step_status,
+            },
+        )
+
+    return {
+        "response": resp,
+        "transaction_signature": settled.get("transaction", ""),
+        "payer_address": str(keypair.pubkey()),
+    }
+
+
+async def _execute_via_agent_wallet(payload: ExecuteRequestIn, request_id: str) -> dict:
+    """/execute를 Agent Wallet 경로로 처리한다 — Phantom 팝업 없이 서버가 스스로 결제한다."""
+    global _consecutive_failures
+
+    try:
+        result = await call_gemini_via_agent_wallet(payload.prompt, payload.plan_steps, payload.plan_step_status)
+    except Exception as exc:
+        _consecutive_failures += 1
+        logger.exception("Agent Wallet 자율 결제 실패")
+        raise HTTPException(status_code=502, detail="Agent Wallet 결제 처리 중 오류가 발생했습니다.") from exc
+
+    resp = result["response"]
+    signature = result["transaction_signature"]
+
+    try:
+        data = resp.json()
+    except Exception:
+        data = {}
+
+    if resp.status_code != 200:
+        _consecutive_failures += 1
+        reason = data.get("detail") or data.get("reason") or f"HTTP {resp.status_code}"
+        return {
+            "approved": False,
+            "status": "rejected",
+            "reason": reason,
+            "rejected_stage": "policy_check",
+            "request_id": request_id,
+            "category": "gemini",
+            "amount": GEMINI_PRICE_USD,
+            "policy_check": (data.get("policy_decision") or {}).get("policy_check", []),
+            "completed_steps": ["request_analysis", "price_check", "policy_check"],
+            "demo_mode": False,
+            "payment_status": "not_charged_rejected",
+            "transaction_signature": signature,
+        }
+
+    _consecutive_failures = 0
+
+    return {
+        "approved": True,
+        "status": "completed",
+        "answer": data.get("answer", ""),
+        "plan_steps": data.get("plan_steps"),
+        "plan_step_status": data.get("plan_step_status"),
+        "task_complete": data.get("task_complete"),
+        "next_prompt": data.get("next_prompt"),
+        "request_id": request_id,
+        "category": "gemini",
+        "amount": GEMINI_PRICE_USD,
+        "policy_check": (data.get("policy_decision") or {}).get("policy_check", []),
+        "payment_status": "confirmed",
+        "transaction_signature": signature,
+        "completed_steps": [
+            "request_analysis",
+            "price_check",
+            "policy_check",
+            "payment",
+            "onchain_confirmation",
+            "api_execution",
+            "result_delivery",
+        ],
+        "demo_mode": False,
+        "demo_notice": None,
+    }
+
+
+@app.get("/agent-wallet/info")
+async def agent_wallet_info() -> dict:
+    """프론트 설정 화면이 Agent Wallet 주소·잔액을 보여줄 때 쓴다 (개인키는 절대 노출 안 함)."""
+    keypair = _get_agent_keypair()
+    address = str(keypair.pubkey())
+    try:
+        balance = await get_onchain_usdc_balance(address)
+    except Exception:
+        logger.exception("Agent Wallet 잔액 조회 실패")
+        balance = None
+    return {"address": address, "usdc_balance": balance, "network": "solana-devnet"}
 
 
 @app.get("/health")
@@ -509,6 +698,10 @@ async def call_gemini_api(
         "contents": [{"parts": [{"text": contents_text}]}],
         "generationConfig": {
             "temperature": 0,
+            # thinking을 꺼도(budget=0) 계획 분해·단계 판단 정확도와 답변 품질이
+            # 그대로인 것을 A/B 테스트로 확인함. thinking 토큰이 답변 토큰보다도
+            # 많이 나가서(702 vs 498) 실제 비용의 절반 이상을 차지하고 있었음.
+            "thinkingConfig": {"thinkingBudget": 0},
             "responseMimeType": "application/json",
             "responseSchema": schema,
         },
@@ -566,6 +759,10 @@ async def execute_demo(payload: ExecuteRequestIn) -> dict:
         raise HTTPException(status_code=503, detail="The demo payment endpoint is disabled.")
 
     request_id = payload.request_id or str(uuid.uuid4())
+
+    if payload.use_agent_wallet:
+        return await _execute_via_agent_wallet(payload, request_id)
+
     real_payment = False
 
     if payload.transaction_signature:

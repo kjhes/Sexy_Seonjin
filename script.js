@@ -442,11 +442,17 @@ async function runSingleChainCall(
     let transactionSignature = null;
 
     /*
-        지갑이 연결되어 있고 결제 방식이 "Phantom Wallet"이면
-        실제로 devnet USDC를 서명해서 보낸다.
-        (Agent Wallet 방식은 아직 미구현이라 기존 데모 경로로 처리한다.)
+        결제 방식이 "Agent Wallet"이면 사람이 승인할 필요가 없다 — 서버가 자기
+        전용 지갑으로 정책 통과 시 스스로 서명·결제한다(팝업 없음). "Phantom
+        Wallet"이면 지갑이 연결된 경우에만 브라우저에서 실제로 서명해서 보낸다.
+        (Phantom은 브라우저 지갑의 보안모델상 사람 승인 없이는 서명 자체가
+        불가능하다 — 대신 완전 자율 결제를 보여주려면 Agent Wallet을 쓴다.)
     */
+    const useAgentWallet =
+        appState.settings.paymentMethod === "agent";
+
     const shouldPayForReal =
+        !useAgentWallet &&
         appState.walletConnected &&
         appState.settings.paymentMethod === "phantom";
 
@@ -456,7 +462,15 @@ async function runSingleChainCall(
 
     completeProcessStep(1);
 
-    if (shouldPayForReal) {
+    if (useAgentWallet) {
+        /*
+            Agent Wallet은 정책 통과 여부와 서명·결제가 전부 /execute 호출
+            안에서 서버 쪽에 일어난다(팝업으로 나눠 보여줄 클라이언트 단계가 없음).
+            응답이 오면 updateStepsFromResponse가 실제로 어디까지 진행됐는지
+            completed_steps를 보고 알아서 단계 표시를 채운다.
+        */
+
+    } else if (shouldPayForReal) {
         activateProcessStep(3);
 
         try {
@@ -506,7 +520,10 @@ async function runSingleChainCall(
         },
 
         transaction_signature:
-            transactionSignature
+            transactionSignature,
+
+        use_agent_wallet:
+            useAgentWallet
     };
 
     let response;
