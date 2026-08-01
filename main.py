@@ -627,6 +627,10 @@ async def call_gemini_api(
             "temperature": 0,
             "responseMimeType": "application/json",
             "responseSchema": schema,
+            # thinkingConfig 없이 두면 기본값(medium)으로 "생각" 토큰을 답변보다 훨씬
+            # 많이 써서 과금된다 (실측: 답변 166 vs 생각 1116 토큰). minimal로 낮춰서
+            # 호출당 비용을 줄인다 (Gemini 3.5 Flash는 완전히 끄는 건 지원 안 함).
+            "thinkingConfig": {"thinkingLevel": "minimal"},
         },
     }
     # 첫 호출은 목표 분해 + 답변 + 단계별 판단을 한 번에 하므로 기존 30초보다 여유를 둔다.
