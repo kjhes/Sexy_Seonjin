@@ -91,7 +91,11 @@ app.add_middleware(PaymentMiddlewareASGI, routes=routes, server=resource_server)
 
 class GeminiRequestIn(BaseModel):
     prompt: str
-    task_plan: str | None = None
+    # 체인의 첫 호출이면 둘 다 비워서 보낸다 (Gemini가 목표를 분석해 계획을 새로 만듦).
+    # 두 번째 호출부터는 직전 응답의 plan_steps/plan_step_status를 그대로 echo해서 보내야
+    # 계획이 잠긴 채로 이어진다.
+    plan_steps: list[str] | None = None
+    plan_step_status: list[bool] | None = None
 
 
 class DemoWalletIn(BaseModel):
@@ -103,7 +107,8 @@ class DemoWalletIn(BaseModel):
 class ExecuteRequestIn(BaseModel):
     prompt: str
     request_id: str | None = None
-    task_plan: str | None = None
+    plan_steps: list[str] | None = None
+    plan_step_status: list[bool] | None = None
     wallet: DemoWalletIn = Field(default_factory=DemoWalletIn)
     # 프론트에서 Phantom으로 실제 서명해서 제출한 devnet USDC 결제 트랜잭션 서명.
     # 채워져 있으면 온체인에서 직접 검증하고, 없으면 기존 데모(미결제) 경로로 처리한다.
@@ -297,7 +302,54 @@ def extract_payer_wallet(request: Request) -> str | None:
 # ---------------------------------------------------------------------------
 # 정책 엔진(/evaluate) 연동
 # ---------------------------------------------------------------------------
-async def call_policy_engine(request: Request, prompt: str, task_plan: str | None) -> dict:
+def _plan_steps_to_text(plan_steps: list[str] | None) -> str:
+    """레이어2(semantic_layer.py)는 task_plan을 사람이 읽는 문자열로 받으므로,
+    구조화된 plan_steps를 번호 매긴 문장으로 풀어서 전달한다. 아직 계획이 없으면(첫 호출)
+    빈 문자열을 돌려준다."""
+    if not plan_steps:
+        return ""
+    return " / ".join(f"{i + 1}) {step}" for i, step in enumerate(plan_steps))
+
+
+def _semantic_check_prompt(
+    prompt: str,
+    plan_steps: list[str] | None,
+    plan_step_status: list[bool] | None,
+) -> str:
+    """레이어2(의미 판단)에 넘길 user_prompt를 결정한다.
+
+    plan_steps가 없는 첫 호출은 '사용자의 최초 작업 요청' 그 자체다. project.md에 이미
+    명시된 원칙대로, 이건 스코프의 정의 기준점이라 자기 자신과 비교하는 셈이라 검사 대상이
+    아니다(비교할 확정된 계획이 아직 없기도 하다). 그래서 첫 호출은 빈 문자열을 보내
+    semantic_layer.py가 자동으로 건너뛰게 한다.
+
+    두 번째 호출부터는 semantic_layer.py가 기대하는 형태("이 호출이 왜 필요한지"에 대한
+    근거 텍스트)로 직접 만들어서 보낸다. next_prompt(=Gemini한테 실제로 시킬 작업 지시문)를
+    그대로 user_prompt로 흘려보내면 안 된다 — 그건 "근거"가 아니라 "지시"라서, 레이어2가
+    "근거가 불분명함(goal_clear=false)"으로 오판하는 원인이 된다. 대신 고정된 계획에서
+    아직 안 끝난 단계가 몇 번째인지 코드가 직접 찾아서 근거 문장으로 조립한다.
+    """
+    if not plan_steps:
+        return ""
+
+    status = plan_step_status or [False] * len(plan_steps)
+    next_index = next(
+        (i for i, done in enumerate(status) if not done),
+        len(plan_steps) - 1,
+    )
+
+    return (
+        f"고정된 작업 계획의 {next_index + 1}번째 단계('{plan_steps[next_index]}')를 "
+        f"수행하기 위해, 이번 요청 '{prompt}'으로 호출함."
+    )
+
+
+async def call_policy_engine(
+    request: Request,
+    prompt: str,
+    plan_steps: list[str] | None,
+    plan_step_status: list[bool] | None,
+) -> dict:
     """AI 친구의 정책 판단 엔진(POST {POLICY_ENGINE_URL}/evaluate)에 이번 결제 건의
     실제 사실값을 채워 보낸다.
 
@@ -334,8 +386,8 @@ async def call_policy_engine(request: Request, prompt: str, task_plan: str | Non
         "ai_consecutive_failures": _consecutive_failures,
         "has_required_permission": True,
         "infra_stable": infra_stable,
-        "user_prompt": prompt,
-        "task_plan": task_plan,
+        "user_prompt": _semantic_check_prompt(prompt, plan_steps, plan_step_status),
+        "task_plan": _plan_steps_to_text(plan_steps),
     }
 
     url = f"{POLICY_ENGINE_URL.rstrip('/')}/evaluate"
@@ -359,38 +411,95 @@ async def call_policy_engine(request: Request, prompt: str, task_plan: str | Non
 
 # ---------------------------------------------------------------------------
 # 실제 Gemini API 호출
+#
+# 계획(plan_steps)은 딱 한 번(호출자가 아직 plan_steps를 안 보낸 "첫 호출")만 Gemini가
+# 사용자의 뭉툭한 목표를 분석해서 만든다. 그 이후 호출부터는 이 목록을 그대로 고정해서
+# 다시 프롬프트에 박아 넣고, Gemini는 목록을 다시 쓸 권한 없이 "각 단계가 이번 답변으로
+# 충족됐는지"만 판단한다. 완료 여부(all done)는 Gemini의 자기 판단이 아니라 코드가
+# plan_step_status를 집계해서 결정한다 — "완료됐는데도 애매하다고 계속 부른다"는 리스크를
+# 통짜 판단 대신 항목별 판단 + 코드 집계로 줄이기 위함.
 # ---------------------------------------------------------------------------
-_CHAIN_SYSTEM_INSTRUCTION = """너는 자율 에이전트 체인의 한 단계를 처리하는 실행기다.
+_FIRST_CALL_INSTRUCTION = """너는 자율 에이전트 체인의 첫 단계를 처리하는 실행기다.
 
-작업 계획: "{task_plan}"
-사용자 요청: "{prompt}"
+사용자의 목표: "{prompt}"
 
-위 요청에 실제로 답하라. 그리고 이 답변으로 작업 계획 전체가 실질적으로 완료됐는지 판단하라.
+1. 이 목표를 달성하기 위해 필요한 구체적이고 유한한 단계들로 나눠라(1개~5개 정도,
+   목표가 한 번에 끝나면 1개만). 이 목록은 지금 한 번만 정하고 이후 절대 바뀌지 않는다.
+2. 목표(또는 그 일부)에 실제로 답하라.
+3. 이번 답변으로 위 각 단계가 충족됐는지 하나씩 판단하라.
 
 - answer: 사용자에게 보여줄 실제 답변
-- task_complete: 계획의 모든 단계가 충족됐으면 true. 완료 여부가 조금이라도 애매하면
-  true로 판단하라 — 추가로 이어서 호출하면 실제 비용(USDC 결제)이 발생하므로,
-  불필요하게 이어가는 것보다 여기서 멈추는 편이 훨씬 안전하다.
-- next_prompt: task_complete가 false일 때만, 다음 단계에 그대로 사용할 완전한 프롬프트를
-  작성하라. task_complete가 true면 빈 문자열로 둬라.
+- plan_steps: 방금 나눈 단계 목록 (문자열 배열, 순서 유지)
+- plan_step_status: plan_steps와 같은 순서·같은 개수의 boolean 배열. 이번 답변이 그
+  단계를 충족시켰으면 true, 아니면 false
+- next_prompt: 아직 안 끝난 단계가 있다면, 다음 호출에 그대로 쓸 완전한 프롬프트.
+  전부 끝났다고 판단되면 빈 문자열로 둬라
 """
 
-_CHAIN_RESPONSE_SCHEMA = {
+_CONTINUATION_INSTRUCTION = """너는 자율 에이전트 체인의 다음 단계를 처리하는 실행기다.
+
+고정된 작업 계획(이 목록은 이미 확정되어 절대 바뀌지 않는다): {plan_steps}
+지금까지 단계별 완료 상태: {plan_step_status}
+이번 요청: "{prompt}"
+
+이번 요청에 실제로 답하라. 그리고 위 고정된 계획의 각 단계에 대해, 이번 답변으로
+새로 충족된 게 있는지만 판단하라 (이미 완료된 단계는 그대로 완료로 유지, 계획
+목록 자체를 새로 만들거나 항목을 추가/삭제하려 하지 마라).
+
+- answer: 사용자에게 보여줄 실제 답변
+- plan_step_status: plan_steps와 같은 순서·같은 개수의 boolean 배열 (이번 판단 기준)
+- next_prompt: 아직 안 끝난 단계가 있다면, 다음 호출에 그대로 쓸 완전한 프롬프트.
+  전부 끝났다고 판단되면 빈 문자열로 둬라
+"""
+
+_FIRST_CALL_SCHEMA = {
     "type": "OBJECT",
     "properties": {
         "answer": {"type": "STRING"},
-        "task_complete": {"type": "BOOLEAN"},
+        "plan_steps": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "plan_step_status": {"type": "ARRAY", "items": {"type": "BOOLEAN"}},
         "next_prompt": {"type": "STRING"},
     },
-    "required": ["answer", "task_complete"],
+    "required": ["answer", "plan_steps", "plan_step_status"],
+}
+
+_CONTINUATION_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "answer": {"type": "STRING"},
+        "plan_step_status": {"type": "ARRAY", "items": {"type": "BOOLEAN"}},
+        "next_prompt": {"type": "STRING"},
+    },
+    "required": ["answer", "plan_step_status"],
 }
 
 
-async def call_gemini_api(prompt: str, task_plan: str | None) -> dict:
+def _merge_step_status(previous: list[bool] | None, latest: list[bool]) -> list[bool]:
+    """한 번 done=true가 된 단계는 이후 판단에서 false로 되돌아가지 않게 OR로 누적한다."""
+    if not previous:
+        return latest
+    return [bool(p) or bool(n) for p, n in zip(previous, latest)]
+
+
+async def call_gemini_api(
+    prompt: str,
+    plan_steps: list[str] | None,
+    plan_step_status: list[bool] | None,
+) -> dict:
     if not GEMINI_API_KEY:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY가 설정되지 않았습니다")
 
-    contents_text = _CHAIN_SYSTEM_INSTRUCTION.format(task_plan=task_plan or "(없음)", prompt=prompt)
+    is_first_call = not plan_steps
+    if is_first_call:
+        contents_text = _FIRST_CALL_INSTRUCTION.format(prompt=prompt)
+        schema = _FIRST_CALL_SCHEMA
+    else:
+        contents_text = _CONTINUATION_INSTRUCTION.format(
+            plan_steps=json.dumps(plan_steps, ensure_ascii=False),
+            plan_step_status=json.dumps(plan_step_status or [False] * len(plan_steps), ensure_ascii=False),
+            prompt=prompt,
+        )
+        schema = _CONTINUATION_SCHEMA
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -399,23 +508,43 @@ async def call_gemini_api(prompt: str, task_plan: str | None) -> dict:
     body = {
         "contents": [{"parts": [{"text": contents_text}]}],
         "generationConfig": {
+            "temperature": 0,
             "responseMimeType": "application/json",
-            "responseSchema": _CHAIN_RESPONSE_SCHEMA,
+            "responseSchema": schema,
         },
     }
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    # 첫 호출은 목표 분해 + 답변 + 단계별 판단을 한 번에 하므로 기존 30초보다 여유를 둔다.
+    async with httpx.AsyncClient(timeout=90.0) as client:
         resp = await client.post(url, json=body)
         resp.raise_for_status()
         return resp.json()
 
 
-def _extract_chain_result(gemini_result: dict) -> dict:
-    """Gemini의 구조화된 JSON 응답(answer/task_complete/next_prompt)을 꺼낸다."""
+def _extract_chain_result(
+    gemini_result: dict,
+    prior_plan_steps: list[str] | None,
+    prior_plan_step_status: list[bool] | None,
+) -> dict:
+    """Gemini의 구조화된 JSON 응답을 꺼내고, 계획 잠금 + 완료 여부 집계를 코드가 확정한다."""
     text = gemini_result["candidates"][0]["content"]["parts"][0]["text"]
     parsed = json.loads(text)
+
+    # 계획은 첫 호출에서 온 것만 채택한다. 이후 호출에서 모델이 뭘 보내든(스키마상 안 보내지만
+    # 방어적으로) 무시하고 이미 잠긴 prior_plan_steps를 그대로 쓴다 — 재계획 여지를 코드 레벨에서 차단.
+    plan_steps = prior_plan_steps or parsed.get("plan_steps") or []
+    latest_status = [bool(v) for v in parsed.get("plan_step_status", [])]
+    # 길이가 안 맞으면(모델이 스키마를 어겼거나 계획이 비어있으면) 안전하게 전부 미완료로 취급한다.
+    if len(latest_status) != len(plan_steps):
+        latest_status = [False] * len(plan_steps)
+    plan_step_status = _merge_step_status(prior_plan_step_status, latest_status)
+
+    task_complete = bool(plan_step_status) and all(plan_step_status)
+
     return {
         "answer": parsed.get("answer", ""),
-        "task_complete": bool(parsed.get("task_complete", True)),
+        "plan_steps": plan_steps,
+        "plan_step_status": plan_step_status,
+        "task_complete": task_complete,
         "next_prompt": parsed.get("next_prompt") or None,
     }
 
@@ -485,8 +614,8 @@ async def execute_demo(payload: ExecuteRequestIn) -> dict:
         "ai_consecutive_failures": _consecutive_failures,
         "has_required_permission": True,
         "infra_stable": True,
-        "user_prompt": payload.prompt,
-        "task_plan": payload.task_plan or payload.prompt,
+        "user_prompt": _semantic_check_prompt(payload.prompt, payload.plan_steps, payload.plan_step_status),
+        "task_plan": _plan_steps_to_text(payload.plan_steps),
     }
 
     try:
@@ -524,8 +653,8 @@ async def execute_demo(payload: ExecuteRequestIn) -> dict:
         }
 
     try:
-        gemini_result = await call_gemini_api(payload.prompt, payload.task_plan or payload.prompt)
-        chain_result = _extract_chain_result(gemini_result)
+        gemini_result = await call_gemini_api(payload.prompt, payload.plan_steps, payload.plan_step_status)
+        chain_result = _extract_chain_result(gemini_result, payload.plan_steps, payload.plan_step_status)
     except HTTPException:
         _consecutive_failures += 1
         raise
@@ -539,6 +668,8 @@ async def execute_demo(payload: ExecuteRequestIn) -> dict:
         "approved": True,
         "status": "completed",
         "answer": chain_result["answer"],
+        "plan_steps": chain_result["plan_steps"],
+        "plan_step_status": chain_result["plan_step_status"],
         "task_complete": chain_result["task_complete"],
         "next_prompt": chain_result["next_prompt"],
         "request_id": request_id,
@@ -562,7 +693,7 @@ async def execute_demo(payload: ExecuteRequestIn) -> dict:
 
 @app.post("/api/gemini")
 async def call_gemini(payload: GeminiRequestIn, request: Request) -> dict:
-    decision = await call_policy_engine(request, payload.prompt, payload.task_plan)
+    decision = await call_policy_engine(request, payload.prompt, payload.plan_steps, payload.plan_step_status)
 
     if not decision.get("approved"):
         raise HTTPException(
@@ -570,13 +701,15 @@ async def call_gemini(payload: GeminiRequestIn, request: Request) -> dict:
             detail=decision.get("reason", "정책 엔진이 이 결제를 거부했습니다"),
         )
 
-    gemini_result = await call_gemini_api(payload.prompt, payload.task_plan)
-    chain_result = _extract_chain_result(gemini_result)
+    gemini_result = await call_gemini_api(payload.prompt, payload.plan_steps, payload.plan_step_status)
+    chain_result = _extract_chain_result(gemini_result, payload.plan_steps, payload.plan_step_status)
 
     return {
         "approved": True,
         "policy_decision": decision,
         "answer": chain_result["answer"],
+        "plan_steps": chain_result["plan_steps"],
+        "plan_step_status": chain_result["plan_step_status"],
         "task_complete": chain_result["task_complete"],
         "next_prompt": chain_result["next_prompt"],
         "gemini_response": gemini_result,

@@ -1,15 +1,19 @@
 """
-연쇄 호출 데모: Gemini 자신이 "이 작업이 끝났는지, 안 끝났으면 다음엔 뭘 물어봐야
-하는지"를 구조화된 JSON(answer/task_complete/next_prompt)으로 판단해서 돌려주고,
-이 스크립트는 task_complete=false인 동안 next_prompt로 자동으로 다음 결제+호출을
-잇는다. task_complete=true가 되는 즉시 종료한다.
+연쇄 호출 데모: 뭉툭한 목표 하나만 주면, 첫 호출에서 Gemini가 그 목표를 구체적인
+단계 리스트(plan_steps)로 분석해서 만들고, 그 이후 호출부터는 이 리스트를 그대로
+잠근 채(다시 못 만듦) "각 단계가 이번 답변으로 충족됐는지"만 항목별로 판단한다.
+전체 완료 여부(task_complete)는 Gemini의 통짜 자기판단이 아니라, 이 스크립트가
+아니라 main.py가 plan_step_status(단계별 bool)를 집계해서(all done) 코드로 확정한다.
+이 스크립트는 그 결과를 받아 task_complete=false인 동안 next_prompt로 다음 결제+
+호출을 이어가면서, plan_steps/plan_step_status를 계속 echo해서 계획이 안 흔들리게 한다.
 
 무한/과다 반복 방지 안전장치:
-  1. Gemini 프롬프트 자체가 "애매하면 완료로 판단하라"고 편향돼 있음 (main.py 참고)
-  2. task_plan을 정책엔진(레이어2)이 매 호출마다 대조 판단함 (근거 부실한 continuation은 거부됨)
-  3. 이 스크립트의 MAX_STEPS 하드캡 (최후 방어선)
+  1. 완료 판단이 모델의 통짜 판단이 아니라 "항목별 판단 + 코드 집계"라 애매함이 낄 여지가 적음
+  2. plan_steps는 첫 호출 이후 코드가 강제로 고정함(모델이 다시 못 만듦) — main.py 참고
+  3. task_plan(plan_steps를 풀어쓴 문자열)을 정책엔진(레이어2)이 매 호출마다 대조 판단함
+  4. 이 스크립트의 MAX_STEPS 하드캡 (최후 방어선)
 
-main.py, policy_server.py 코드는 여기서 건드리지 않고 그대로 재사용한다.
+policy_server.py 코드는 여기서 건드리지 않고 그대로 재사용한다.
 
 실행 전 준비:
   1. 터미널 1: uvicorn policy_server:app --port 8000
@@ -34,11 +38,8 @@ from x402.mechanisms.svm.exact import register_exact_svm_client
 MAIN_SERVER_URL = os.environ.get("MAIN_SERVER_URL", "http://127.0.0.1:3000")
 WALLET_PATH = os.environ.get("DEMO_WALLET_PATH", "demo_wallet.json")
 
-TASK_PLAN = (
-    "1) 국내 가족 여행지 3곳 추천, 2) 추천된 곳 중 한 곳으로 2박3일 일정 완성. "
-    "이 두 가지가 모두 답변에 포함되면 완료."
-)
-INITIAL_PROMPT = "국내 가족 여행지 3곳을 추천해줘. 각각 간단한 이유도 함께."
+# 뭉툭한 목표만 준다 — 구체적 단계 분해는 main.py의 첫 호출에서 Gemini가 직접 한다.
+INITIAL_PROMPT = "국내 가족 여행지를 추천해주고, 그중 한 곳으로 2박3일 일정까지 짜줘."
 MAX_STEPS = 5  # 안전장치: Gemini나 정책판단이 다 뚫려도 여기서 강제 종료
 
 
@@ -78,10 +79,19 @@ def load_or_create_wallet() -> Keypair:
     sys.exit(0)
 
 
-async def call_step(http, label: str, prompt: str) -> dict:
+async def call_step(
+    http,
+    label: str,
+    prompt: str,
+    plan_steps: list[str] | None,
+    plan_step_status: list[bool] | None,
+) -> dict:
     print(f"\n=== {label} ===")
     print(f"프롬프트: {prompt}")
-    resp = await http.post(f"{MAIN_SERVER_URL}/api/gemini", json={"prompt": prompt, "task_plan": TASK_PLAN})
+    resp = await http.post(
+        f"{MAIN_SERVER_URL}/api/gemini",
+        json={"prompt": prompt, "plan_steps": plan_steps, "plan_step_status": plan_step_status},
+    )
     print(f"HTTP 상태: {resp.status_code}")
     data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
     if resp.status_code != 200:
@@ -96,9 +106,11 @@ async def main():
 
     async with wrapHttpxWithPayment(client, timeout=30.0) as http:
         prompt = INITIAL_PROMPT
+        plan_steps: list[str] | None = None
+        plan_step_status: list[bool] | None = None
 
         for step in range(1, MAX_STEPS + 1):
-            data = await call_step(http, f"{step}단계 호출", prompt)
+            data = await call_step(http, f"{step}단계 호출", prompt, plan_steps, plan_step_status)
 
             if not data.get("approved"):
                 reason = data.get("policy_decision", {}).get("reason") or data.get("detail")
@@ -108,8 +120,14 @@ async def main():
             answer = data.get("answer", "")
             print(f"\n{step}단계 실제 답변:\n{answer}")
 
+            # 서버가 확정한 계획/진행상황을 그대로 이어받는다 — 이후 호출에서 계획이
+            # 다시 만들어지지 않도록(잠긴 채로) 매번 echo한다.
+            plan_steps = data.get("plan_steps") or plan_steps
+            plan_step_status = data.get("plan_step_status") or plan_step_status
+            print(f"단계별 진행상황: {list(zip(plan_steps or [], plan_step_status or []))}")
+
             if data.get("task_complete"):
-                print(f"\n=== Gemini가 작업 완료로 판단해 {step}단계에서 자동 종료 ===")
+                print(f"\n=== 모든 계획 단계가 완료로 집계되어 {step}단계에서 자동 종료 ===")
                 return
 
             next_prompt = data.get("next_prompt")
