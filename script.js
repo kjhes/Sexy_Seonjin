@@ -860,6 +860,179 @@ function updateChainProgress(
 
 
 /*
+    ── 답변 텍스트를 안전하게 "보기 좋은 HTML"로 바꾸는 부분 ──
+
+    Gemini 답변은 순수 텍스트라, **굵게** 표시나 번호목록("1. ...")이 전부
+    글자 그대로 나와서 한 덩어리 문단처럼 보였다. 이걸 실제 굵은 글씨/목록으로
+    바꿔서 눈에 잘 들어오게 한다.
+
+    주의: answer는 AI가 생성한(신뢰할 수 없는) 텍스트라, HTML로 그대로
+    끼워넣으면 안 된다(XSS 위험). 그래서 먼저 escapeHtml로 모든 HTML
+    특수문자를 무력화한 다음에만, 우리가 직접 허용한 태그(strong/ul/ol/li/p)
+    로 치환한다 — AI가 만든 내용이 실제 HTML 태그로 해석될 여지를 없앤다.
+*/
+function escapeHtml(text) {
+    const div =
+        document.createElement("div");
+
+    div.textContent = text;
+
+    return div.innerHTML;
+}
+
+
+function renderFormattedText(rawText) {
+    const escaped =
+        escapeHtml(String(rawText ?? ""));
+
+    // **텍스트** -> <strong>텍스트</strong> (이스케이프 이후라 안전함)
+    const withBold =
+        escaped.replace(
+            /\*\*(.+?)\*\*/g,
+            "<strong>$1</strong>"
+        );
+
+    const lines =
+        withBold.split("\n");
+
+    const htmlParts = [];
+
+    let listBuffer = [];
+    let listTag = null;
+
+    function flushList() {
+        if (listBuffer.length === 0) {
+            return;
+        }
+
+        const items =
+            listBuffer
+                .map((li) => `<li>${li}</li>`)
+                .join("");
+
+        htmlParts.push(`<${listTag}>${items}</${listTag}>`);
+
+        listBuffer = [];
+        listTag = null;
+    }
+
+    lines.forEach((rawLine) => {
+        const line = rawLine.trim();
+
+        if (!line) {
+            flushList();
+            return;
+        }
+
+        const orderedMatch =
+            line.match(/^(\d+)[.)]\s+(.*)$/);
+
+        const bulletMatch =
+            line.match(/^[-*•▶]\s+(.*)$/);
+
+        if (orderedMatch) {
+            if (listTag !== "ol") {
+                flushList();
+                listTag = "ol";
+            }
+
+            listBuffer.push(orderedMatch[2]);
+
+        } else if (bulletMatch) {
+            if (listTag !== "ul") {
+                flushList();
+                listTag = "ul";
+            }
+
+            listBuffer.push(bulletMatch[1]);
+
+        } else {
+            flushList();
+            htmlParts.push(`<p>${line}</p>`);
+        }
+    });
+
+    flushList();
+
+    return htmlParts.join("");
+}
+
+
+/*
+    "N차 Gemini 호출" 카드 하나(제목 + 목적 상자 + 결과 상자)를 만든다.
+    실시간 진행 패널과 최종 결과 화면이 완전히 같은 모양을 쓰도록 공용으로 뺐다.
+*/
+function buildStepCardElement(
+    stepNumber,
+    planStepLabel,
+    prompt,
+    answer
+) {
+    const card =
+        document.createElement("div");
+
+    card.className = "chain-answer-item";
+
+    const heading =
+        document.createElement("strong");
+
+    heading.textContent =
+        planStepLabel
+            ? `${stepNumber}차 Gemini 호출 · ${planStepLabel}`
+            : `${stepNumber}차 Gemini 호출`;
+
+    const purposeBox =
+        document.createElement("div");
+
+    purposeBox.className =
+        "chain-step-box chain-step-purpose";
+
+    const purposeLabel =
+        document.createElement("span");
+
+    purposeLabel.className = "chain-step-label";
+    purposeLabel.textContent = "목적";
+
+    const purposeText =
+        document.createElement("span");
+
+    purposeText.className = "chain-step-purpose-text";
+    purposeText.textContent = prompt;
+
+    purposeBox.appendChild(purposeLabel);
+    purposeBox.appendChild(purposeText);
+
+    const resultBox =
+        document.createElement("div");
+
+    resultBox.className =
+        "chain-step-box chain-step-result";
+
+    const resultLabel =
+        document.createElement("span");
+
+    resultLabel.className = "chain-step-label";
+    resultLabel.textContent = "결과";
+
+    const resultBody =
+        document.createElement("div");
+
+    resultBody.className = "chain-step-result-body";
+    // renderFormattedText가 이미 escapeHtml을 거친 안전한 문자열만 반환한다.
+    resultBody.innerHTML = renderFormattedText(answer);
+
+    resultBox.appendChild(resultLabel);
+    resultBox.appendChild(resultBody);
+
+    card.appendChild(heading);
+    card.appendChild(purposeBox);
+    card.appendChild(resultBox);
+
+    return card;
+}
+
+
+/*
     체인의 각 단계 답변이 나오는 즉시(전체 완료를 기다리지 않고) 하나씩
     쌓아서 보여준다. 전체 완료 화면(성공 결과)은 별개로 끝에 한 번 더 뜬다.
 */
@@ -871,45 +1044,16 @@ function appendChainAnswer(
 ) {
     chainAnswers.classList.remove("hidden");
 
-    const label =
-        planSteps && planSteps[stepNumber - 1]
-            ? `${stepNumber}차 Gemini 호출 · ${planSteps[stepNumber - 1]}`
-            : `${stepNumber}차 Gemini 호출`;
+    const planStepLabel =
+        planSteps && planSteps[stepNumber - 1];
 
     const item =
-        document.createElement("div");
-
-    item.className = "chain-answer-item";
-
-    const heading =
-        document.createElement("strong");
-
-    heading.textContent = label;
-
-    /*
-        "목적"(이번 호출에 실제로 뭘 물어봤는지)과 "결과"(Gemini가 뭐라고
-        답했는지)를 분리해서 보여준다 — 재귀호출이 매 단계 무엇을 근거로
-        이어지는지 한눈에 보이게 하기 위함.
-    */
-    const purposeLine =
-        document.createElement("p");
-
-    purposeLine.className = "chain-answer-purpose";
-
-    purposeLine.textContent =
-        `목적: ${prompt}`;
-
-    const resultLine =
-        document.createElement("p");
-
-    resultLine.className = "chain-answer-result";
-
-    resultLine.textContent =
-        `결과: ${answer}`;
-
-    item.appendChild(heading);
-    item.appendChild(purposeLine);
-    item.appendChild(resultLine);
+        buildStepCardElement(
+            stepNumber,
+            planStepLabel,
+            prompt,
+            answer
+        );
 
     chainAnswersList.appendChild(item);
 
@@ -1232,29 +1376,57 @@ function showSuccessResult(
 
     /*
         여러 단계에 걸쳐 이어진 체인이면(stepAnswers.length > 1) 각 단계마다
-        "목적(무엇을 물어봤는지)"과 "결과(무엇을 답했는지)"를 같이 보여줘서
-        재귀호출이 어떤 근거로 이어졌는지 최종 화면에서도 그대로 드러나게 한다.
-        단일 단계면 기존처럼 답변만 그대로 보여준다.
+        "목적(무엇을 물어봤는지)"과 "결과(무엇을 답했는지)"를 실시간 패널과
+        똑같은 카드 형태로 보여줘서, 재귀호출이 어떤 근거로 이어졌는지
+        최종 화면에서도 한눈에 드러나게 한다. 단일 단계면 답변 하나만
+        보기 좋게(굵게/목록 렌더링) 보여준다.
     */
-    const answer =
-        stepAnswers && stepAnswers.length > 1
-            ? stepAnswers
-                .map(
-                    (item) =>
-                        `[${item.stepNumber}차 Gemini 호출]\n` +
-                        `목적: ${item.prompt}\n` +
-                        `결과: ${item.answer}`
-                )
-                .join("\n\n")
-            : (stepAnswers && stepAnswers[0]?.answer) ||
-              data.result ||
-              data.answer ||
-              data.output ||
-              "작업이 완료되었습니다.";
+    resultAnswer.innerHTML = "";
 
-    resultAnswer.textContent = data.demo_mode
-        ? `${answer}\n\n[DEMO] 정책 검사는 실행되었지만 USDC는 결제되지 않았습니다.`
-        : answer;
+    if (stepAnswers && stepAnswers.length > 1) {
+        stepAnswers.forEach((item) => {
+            const planStepLabel =
+                data.plan_steps &&
+                data.plan_steps[item.stepNumber - 1];
+
+            resultAnswer.appendChild(
+                buildStepCardElement(
+                    item.stepNumber,
+                    planStepLabel,
+                    item.prompt,
+                    item.answer
+                )
+            );
+        });
+
+    } else {
+        const singleAnswer =
+            (stepAnswers && stepAnswers[0]?.answer) ||
+            data.result ||
+            data.answer ||
+            data.output ||
+            "작업이 완료되었습니다.";
+
+        const body =
+            document.createElement("div");
+
+        body.className = "chain-step-result-body";
+        body.innerHTML = renderFormattedText(singleAnswer);
+
+        resultAnswer.appendChild(body);
+    }
+
+    if (data.demo_mode) {
+        const demoNote =
+            document.createElement("p");
+
+        demoNote.className = "demo-mode-note";
+
+        demoNote.textContent =
+            "[DEMO] 정책 검사는 실행되었지만 USDC는 결제되지 않았습니다.";
+
+        resultAnswer.appendChild(demoNote);
+    }
 
 
     resultService.textContent =

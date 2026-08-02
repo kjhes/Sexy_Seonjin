@@ -747,37 +747,121 @@ textarea {
     white-space: pre-wrap;
 }
 
+/*
+    한 단계(호출 1회)를 "제목 + 목적 상자 + 결과 상자"로 나눠서 보여준다.
+    전에는 목적/결과가 그냥 이어붙은 텍스트 문단이라 한눈에 안 들어왔는데,
+    각각 라벨 붙은 별도 박스로 쪼개서 시각적으로 분리했다.
+*/
 .chain-answer-item {
-    margin-top: 10px;
-    padding-top: 10px;
+    margin-top: 14px;
+    padding: 14px;
 
-    border-top: 1px solid var(--border);
+    background: var(--background);
+
+    border: 1px solid var(--border);
+    border-radius: 14px;
 }
 
 .chain-answer-item:first-child {
-    margin-top: 8px;
-    padding-top: 0;
-
-    border-top: none;
+    margin-top: 0;
 }
 
-.chain-answer-item strong {
+.chain-answer-item > strong {
     display: block;
-    margin-bottom: 4px;
+    margin-bottom: 10px;
+
+    font-size: 14px;
 }
 
-.chain-answer-item p {
+.chain-step-box {
+    padding: 10px 12px;
+
+    border-radius: 10px;
+}
+
+.chain-step-box + .chain-step-box {
+    margin-top: 8px;
+}
+
+.chain-step-label {
+    display: inline-block;
+    margin-bottom: 6px;
+    padding: 2px 9px;
+
+    border-radius: 999px;
+
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.chain-step-purpose {
+    background: var(--primary-soft);
+}
+
+.chain-step-purpose .chain-step-label {
+    background: var(--primary-dark);
+    color: var(--white);
+}
+
+.chain-step-purpose-text {
+    display: block;
+
+    color: var(--text);
+    font-size: 13px;
+    font-style: italic;
+
     white-space: pre-wrap;
 }
 
-.chain-answer-purpose {
-    color: var(--text-light);
-    font-size: 13px;
-    font-style: italic;
+.chain-step-result {
+    background: var(--surface);
+
+    border: 1px solid var(--border);
 }
 
-.chain-answer-result {
-    margin-top: 6px;
+.chain-step-result .chain-step-label {
+    background: var(--success);
+    color: var(--white);
+}
+
+/* 결과 안의 **굵게**/번호목록/글머리목록을 실제로 렌더링한 내용 */
+.chain-step-result-body p {
+    margin-top: 8px;
+
+    white-space: pre-wrap;
+}
+
+.chain-step-result-body p:first-child {
+    margin-top: 0;
+}
+
+.chain-step-result-body ul,
+.chain-step-result-body ol {
+    margin-top: 8px;
+    padding-left: 20px;
+}
+
+.chain-step-result-body li {
+    margin-top: 4px;
+}
+
+.chain-step-result-body li::marker {
+    color: var(--primary-dark);
+}
+
+.demo-mode-note {
+    margin-top: 14px;
+    padding: 10px 12px;
+
+    background: var(--warning-soft);
+    color: var(--warning);
+
+    border-radius: 10px;
+
+    font-size: 12px;
+    font-weight: 700;
 }
 
 .result-grid {
