@@ -733,6 +733,16 @@ textarea {
     white-space: pre-wrap;
 }
 
+.chain-answer-purpose {
+    color: var(--text-light);
+    font-size: 13px;
+    font-style: italic;
+}
+
+.chain-answer-result {
+    margin-top: 6px;
+}
+
 .result-grid {
     margin-top: 14px;
 

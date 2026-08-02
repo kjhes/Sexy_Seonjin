@@ -415,6 +415,7 @@ async function executeUserRequest(goal) {
 
         stepAnswers.push({
             stepNumber,
+            prompt,
             answer:
                 data.answer ||
                 "실행 결과가 없습니다."
@@ -429,6 +430,7 @@ async function executeUserRequest(goal) {
         appendChainAnswer(
             stepNumber,
             planSteps,
+            prompt,
             data.answer ||
                 "실행 결과가 없습니다."
         );
@@ -824,14 +826,15 @@ function updateChainProgress(
 function appendChainAnswer(
     stepNumber,
     planSteps,
+    prompt,
     answer
 ) {
     chainAnswers.classList.remove("hidden");
 
     const label =
         planSteps && planSteps[stepNumber - 1]
-            ? `${stepNumber}단계 · ${planSteps[stepNumber - 1]}`
-            : `${stepNumber}단계`;
+            ? `${stepNumber}차 Gemini 호출 · ${planSteps[stepNumber - 1]}`
+            : `${stepNumber}차 Gemini 호출`;
 
     const item =
         document.createElement("div");
@@ -843,13 +846,30 @@ function appendChainAnswer(
 
     heading.textContent = label;
 
-    const body =
+    /*
+        "목적"(이번 호출에 실제로 뭘 물어봤는지)과 "결과"(Gemini가 뭐라고
+        답했는지)를 분리해서 보여준다 — 재귀호출이 매 단계 무엇을 근거로
+        이어지는지 한눈에 보이게 하기 위함.
+    */
+    const purposeLine =
         document.createElement("p");
 
-    body.textContent = answer;
+    purposeLine.className = "chain-answer-purpose";
+
+    purposeLine.textContent =
+        `목적: ${prompt}`;
+
+    const resultLine =
+        document.createElement("p");
+
+    resultLine.className = "chain-answer-result";
+
+    resultLine.textContent =
+        `결과: ${answer}`;
 
     item.appendChild(heading);
-    item.appendChild(body);
+    item.appendChild(purposeLine);
+    item.appendChild(resultLine);
 
     chainAnswersList.appendChild(item);
 
@@ -1171,8 +1191,9 @@ function showSuccessResult(
 
 
     /*
-        여러 단계에 걸쳐 이어진 체인이면(stepAnswers.length > 1)
-        각 단계 답변을 번호와 함께 이어붙여서 보여준다.
+        여러 단계에 걸쳐 이어진 체인이면(stepAnswers.length > 1) 각 단계마다
+        "목적(무엇을 물어봤는지)"과 "결과(무엇을 답했는지)"를 같이 보여줘서
+        재귀호출이 어떤 근거로 이어졌는지 최종 화면에서도 그대로 드러나게 한다.
         단일 단계면 기존처럼 답변만 그대로 보여준다.
     */
     const answer =
@@ -1180,7 +1201,9 @@ function showSuccessResult(
             ? stepAnswers
                 .map(
                     (item) =>
-                        `[${item.stepNumber}단계]\n${item.answer}`
+                        `[${item.stepNumber}차 Gemini 호출]\n` +
+                        `목적: ${item.prompt}\n` +
+                        `결과: ${item.answer}`
                 )
                 .join("\n\n")
             : (stepAnswers && stepAnswers[0]?.answer) ||
