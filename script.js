@@ -71,18 +71,8 @@ const startButtonText =
 const emptyProcess =
     document.getElementById("emptyProcess");
 
-const processList =
-    document.getElementById("processList");
-
 const processBadge =
     document.getElementById("processBadge");
-
-// document.querySelectorAll(".process-step"): 그 CSS 클래스를 가진 요소를 "전부" 찾는다
-// (getElementById는 하나만, querySelectorAll은 여러 개를 돌려줌). 근데 그 결과가
-// 진짜 배열이 아니라 배열 비슷한 객체(NodeList)라서, 대괄호 안에 [...그것]으로
-// "스프레드"해서 진짜 배열로 바꿔준다 — 그래야 .forEach, .find 같은 배열 메서드를 자유롭게 씀.
-const processSteps =
-    [...document.querySelectorAll(".process-step")];
 
 const chainProgress =
     document.getElementById("chainProgress");
@@ -445,8 +435,6 @@ async function executeUserRequest(goal) {
         );
 
         if (data.task_complete) {
-            completeAllProcessSteps();
-
             showSuccessResult(
                 lastData,
                 stepAnswers,
@@ -458,8 +446,6 @@ async function executeUserRequest(goal) {
 
         if (!data.next_prompt) {
             // task_complete=false인데 next_prompt가 없으면 안전하게 중단한다.
-            completeAllProcessSteps();
-
             showSuccessResult(
                 lastData,
                 stepAnswers,
@@ -473,8 +459,6 @@ async function executeUserRequest(goal) {
     }
 
     // 안전장치: 최대 단계 수에 도달해 강제로 종료한다.
-    completeAllProcessSteps();
-
     showSuccessResult(
         lastData,
         stepAnswers,
@@ -495,8 +479,6 @@ async function runSingleChainCall(
     planStepStatus,
     stepNumber
 ) {
-    resetProcessStepsForNextChainStep();
-
     prepareProcess();
 
     processBadge.textContent =
@@ -512,8 +494,6 @@ async function runSingleChainCall(
             ? `${stepNumber}/${planSteps.length}단계 진행 중입니다: ${planSteps[stepNumber - 1] || "다음 단계"}...`
             : "AI가 목표를 분석하고 계획을 구성하는 중입니다..."
     );
-
-    activateProcessStep(0);
 
     let transactionSignature = null;
 
@@ -532,28 +512,18 @@ async function runSingleChainCall(
         appState.walletConnected &&
         appState.settings.paymentMethod === "phantom";
 
-    completeProcessStep(0);
-
-    activateProcessStep(1);
-
-    completeProcessStep(1);
-
     if (useAgentWallet) {
         /*
             Agent Wallet은 /execute/prepare를 거치지 않는다 — 정책 통과 여부와
             서명·결제가 전부 이 아래 /execute 호출 한 번 안에서 서버가 처리한다.
-            그래서 매 단계 새 request_id를 직접 만들어야 하고(안 그러면 중복
-            요청으로 거절됨), 응답이 올 때까지 "AI 정책 검사"만 미리 진행 중으로
-            켜둔다 (updateStepsFromResponse가 나머지는 응답 기준으로 채워줌).
+            그래서 매 단계 새 request_id를 직접 만들어야 한다(안 그러면 중복
+            요청으로 거절됨).
         */
         appState.currentRequestId = createRequestId();
-        activateProcessStep(2);
 
     } else {
         // Phantom 경로: /execute/prepare에서 정책판단을 먼저 마치고 일회성
         // request_id를 발급받는다. 이게 있어야 /execute가 승인을 인정해준다.
-        activateProcessStep(2);
-
         updateStatusMessage(
             "정책 엔진이 결제 한도·범위·이상 패턴을 검사하는 중입니다..."
         );
@@ -579,14 +549,12 @@ async function runSingleChainCall(
             );
             prepared = await prepareResponse.json();
             if (!prepareResponse.ok || prepared.approved === false) {
-                failProcessStep(2, "정책 거절");
                 showRejectedResult(
                     prepared.reason || prepared.detail || "정책 검사에서 요청이 거절되었습니다."
                 );
                 return null;
             }
         } catch (error) {
-            failProcessStep(2, "정책 검사 실패");
             showSystemError(
                 "정책 사전 검사에 실패했습니다. 무료 서버 특성상 잠시 꺼져 있을 수 있으니 " +
                 "잠시 후 다시 시도해 주세요. 계속 안 되면 kjhes001@gmail.com 으로 문의해 주세요."
@@ -595,11 +563,9 @@ async function runSingleChainCall(
         }
 
         appState.currentRequestId = prepared.request_id;
-        completeProcessStep(2);
 
         // Never send an unsigned demo execution to a production backend.
         if (prepared.demo_mode === false && !shouldPayForReal) {
-            failProcessStep(3, "Wallet required");
             showSystemError(
                 "Connect Phantom and select Phantom payment to continue."
             );
@@ -607,8 +573,6 @@ async function runSingleChainCall(
         }
 
         if (shouldPayForReal) {
-            activateProcessStep(3);
-
             updateStatusMessage(
                 "Phantom 지갑 서명을 기다리는 중입니다... (팝업에서 승인해 주세요)"
             );
@@ -617,12 +581,8 @@ async function runSingleChainCall(
                 transactionSignature =
                     await payForGeminiCall(backendUrl, prepared);
 
-                completeProcessStep(3);
-
             } catch (error) {
                 console.error(error);
-
-                failProcessStep(3, "결제 실패");
 
                 showSystemError(
                     stepNumber > 1
@@ -634,7 +594,6 @@ async function runSingleChainCall(
             }
 
             if (prepared.demo_mode === false && !transactionSignature) {
-                failProcessStep(3, "Missing payment signature");
                 showSystemError(
                     "The execution request was stopped because no payment signature was returned."
                 );
@@ -699,8 +658,6 @@ async function runSingleChainCall(
         );
 
     } catch (error) {
-        failProcessStep(0, "연결 실패");
-
         showSystemError(
             "백엔드 서버에 연결할 수 없습니다. 무료 서버 특성상 잠시 꺼져 있을 수 있으니 " +
             "잠시 후 다시 시도해 주세요. 계속 안 되면 kjhes001@gmail.com 으로 문의해 주세요."
@@ -716,8 +673,6 @@ async function runSingleChainCall(
         data = await response.json();
 
     } catch (error) {
-        failCurrentProcessStep();
-
         showSystemError(
             "서버 응답 형식이 올바르지 않습니다."
         );
@@ -727,8 +682,6 @@ async function runSingleChainCall(
 
 
     if (!response.ok) {
-        failCurrentProcessStep();
-
         const message =
             data.reason ||
             data.detail ||
@@ -756,23 +709,6 @@ async function runSingleChainCall(
 
 
     /*
-        백엔드가 현재 진행 단계를 배열로 보내면
-        해당 단계를 화면에 표시합니다.
-
-        예시:
-        completed_steps: [
-            "request_analysis",
-            "price_check",
-            "policy_check"
-        ]
-    */
-
-    updateStepsFromResponse(
-        data.completed_steps
-    );
-
-
-    /*
         approved가 false이면
         결제를 진행하지 않고 거절 사유를 표시합니다.
     */
@@ -781,14 +717,6 @@ async function runSingleChainCall(
         data.approved === false ||
         data.status === "rejected"
     ) {
-        const rejectedStep =
-            getRejectedStepIndex(data);
-
-        failProcessStep(
-            rejectedStep,
-            "거절"
-        );
-
         showRejectedResult(
             stepNumber > 1
                 ? `${stepNumber}단계에서 거부됨: ${data.reason || "정책 검사에서 요청이 거절되었습니다."}`
@@ -799,21 +727,6 @@ async function runSingleChainCall(
     }
 
     return data;
-}
-
-
-function resetProcessStepsForNextChainStep() {
-    processSteps.forEach((step) => {
-        step.classList.remove(
-            "active",
-            "completed",
-            "failed"
-        );
-
-        step.querySelector(
-            ".step-status"
-        ).textContent = "대기";
-    });
 }
 
 
@@ -1124,21 +1037,6 @@ function resetExecutionScreen() {
 
     emptyProcess.classList.add("hidden");
 
-    processList.classList.remove("hidden");
-
-    processSteps.forEach((step) => {
-        step.classList.remove(
-            "active",
-            "completed",
-            "failed"
-        );
-
-        const status =
-            step.querySelector(".step-status");
-
-        status.textContent = "대기";
-    });
-
     processBadge.textContent =
         "실행 준비";
 
@@ -1150,181 +1048,11 @@ function resetExecutionScreen() {
 function prepareProcess() {
     emptyProcess.classList.add("hidden");
 
-    processList.classList.remove("hidden");
-
     processBadge.textContent =
         "실행 중";
 
     processBadge.className =
         "process-badge running";
-}
-
-
-function activateProcessStep(index) {
-    processSteps.forEach(
-        (step, stepIndex) => {
-            if (
-                stepIndex !== index &&
-                step.classList.contains("active")
-            ) {
-                step.classList.remove("active");
-            }
-        }
-    );
-
-    const step =
-        processSteps[index];
-
-    if (!step) {
-        return;
-    }
-
-    step.classList.remove(
-        "completed",
-        "failed"
-    );
-
-    step.classList.add("active");
-
-    step.querySelector(
-        ".step-status"
-    ).textContent = "진행 중";
-}
-
-
-function completeProcessStep(index) {
-    const step =
-        processSteps[index];
-
-    if (!step) {
-        return;
-    }
-
-    step.classList.remove(
-        "active",
-        "failed"
-    );
-
-    step.classList.add("completed");
-
-    step.querySelector(
-        ".step-status"
-    ).textContent = "완료";
-}
-
-
-function failProcessStep(
-    index,
-    statusText = "실패"
-) {
-    const step =
-        processSteps[index];
-
-    if (!step) {
-        return;
-    }
-
-    step.classList.remove(
-        "active",
-        "completed"
-    );
-
-    step.classList.add("failed");
-
-    step.querySelector(
-        ".step-status"
-    ).textContent = statusText;
-}
-
-
-function failCurrentProcessStep() {
-    const activeStep =
-        processSteps.find(
-            (step) =>
-                step.classList.contains("active")
-        );
-
-    if (!activeStep) {
-        return;
-    }
-
-    activeStep.classList.remove("active");
-
-    activeStep.classList.add("failed");
-
-    activeStep.querySelector(
-        ".step-status"
-    ).textContent = "실패";
-}
-
-
-function completeAllProcessSteps() {
-    processSteps.forEach((step) => {
-        step.classList.remove(
-            "active",
-            "failed"
-        );
-
-        step.classList.add("completed");
-
-        step.querySelector(
-            ".step-status"
-        ).textContent = "완료";
-    });
-}
-
-
-/* =========================
-   백엔드 단계 응답 처리
-========================= */
-
-function updateStepsFromResponse(
-    completedSteps
-) {
-    if (!Array.isArray(completedSteps)) {
-        return;
-    }
-
-    const stepIndexes = {
-        request_analysis: 0,
-        price_check: 1,
-        policy_check: 2,
-        payment: 3,
-        onchain_confirmation: 4,
-        api_execution: 5,
-        result_delivery: 6
-    };
-
-    completedSteps.forEach(
-        (stepName) => {
-            const index =
-                stepIndexes[stepName];
-
-            if (index !== undefined) {
-                completeProcessStep(index);
-            }
-        }
-    );
-}
-
-
-function getRejectedStepIndex(data) {
-    const stage =
-        data.rejected_stage ||
-        data.failed_stage ||
-        "policy_check";
-
-    const indexes = {
-        request_analysis: 0,
-        price_check: 1,
-        policy_check: 2,
-        payment: 3,
-        onchain_confirmation: 4,
-        api_execution: 5,
-        result_delivery: 6
-    };
-
-    return indexes[stage] ?? 2;
 }
 
 
@@ -1515,8 +1243,6 @@ function showSystemError(message) {
         "process-badge error";
 
     errorMessage.textContent = message;
-
-    failCurrentProcessStep();
 
     errorResult.scrollIntoView({
         behavior: "smooth",

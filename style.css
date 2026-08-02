@@ -564,110 +564,6 @@ textarea {
     font-size: 14px;
 }
 
-.process-list {
-    margin-top: 22px;
-
-    display: grid;
-    gap: 11px;
-}
-
-.process-step {
-    padding: 15px;
-
-    display: grid;
-    grid-template-columns: 42px 1fr auto;
-    align-items: center;
-    gap: 14px;
-
-    border: 1px solid var(--border);
-    border-radius: 17px;
-
-    background: var(--background);
-
-    transition:
-        transform 0.25s ease,
-        background 0.25s ease,
-        border-color 0.25s ease;
-}
-
-.process-step.active {
-    border-color: var(--primary);
-    background: var(--primary-soft);
-
-    transform: translateX(4px);
-}
-
-.process-step.completed {
-    border-color:
-        rgba(59, 155, 118, 0.35);
-
-    background: var(--success-soft);
-}
-
-.process-step.failed {
-    border-color:
-        rgba(214, 95, 104, 0.35);
-
-    background: var(--danger-soft);
-}
-
-.step-number {
-    width: 38px;
-    height: 38px;
-
-    display: grid;
-    place-items: center;
-
-    border-radius: 12px;
-
-    background: white;
-    color: var(--text-light);
-
-    font-weight: 900;
-}
-
-.process-step.active .step-number {
-    background: var(--primary);
-    color: white;
-}
-
-.process-step.completed .step-number {
-    background: var(--success);
-    color: white;
-}
-
-.process-step.failed .step-number {
-    background: var(--danger);
-    color: white;
-}
-
-.step-content p {
-    margin-top: 1px;
-
-    color: var(--text-light);
-    font-size: 13px;
-}
-
-.step-status {
-    color: var(--text-light);
-
-    font-size: 13px;
-    font-weight: 800;
-}
-
-.process-step.active .step-status {
-    color: var(--primary-dark);
-}
-
-.process-step.completed .step-status {
-    color: var(--success);
-}
-
-.process-step.failed .step-status {
-    color: var(--danger);
-}
-
-
 /* =========================
    실행 결과
 ========================= */
@@ -1368,14 +1264,6 @@ textarea {
     .result-grid,
     .two-column {
         grid-template-columns: 1fr;
-    }
-
-    .process-step {
-        grid-template-columns: 38px 1fr;
-    }
-
-    .step-status {
-        grid-column: 2;
     }
 
     .section-heading,
