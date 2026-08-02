@@ -307,14 +307,26 @@ _agent_keypair: Keypair | None = None
 
 
 def _get_agent_keypair() -> Keypair:
-    """Agent Wallet 개인키를 로드한다. 없으면 새로 만들어서 로컬 파일에 저장한다.
+    """Agent Wallet 개인키를 로드한다.
 
-    이 파일은 .gitignore에 포함되어 있어 커밋되지 않는다. Devnet 전용이라 실제
-    자산 가치는 없지만, 이 서버 프로세스만 접근 가능한 로컬 파일에만 존재하고
-    프론트엔드나 API 응답으로는 절대 노출하지 않는다(주소만 노출한다).
+    Render 같은 클라우드 배포 환경은 파일시스템이 재배포·재시작마다 초기화되는
+    경우가 많다 — 그러면 매번 agent_wallet.json이 사라지고 새 지갑이 생성돼서,
+    충전해둔 자금을 계속 잃어버리는 문제가 있었다(실제로 여러 번 재현됨).
+    그래서 `AGENT_WALLET_PRIVATE_KEY`(Phantom "개인 키 내보내기"와 같은 base58
+    문자열) 환경변수가 있으면 그걸 최우선으로 쓴다 — 이 값은 재배포돼도 그대로
+    남아있으니 같은 지갑을 계속 쓸 수 있다. 로컬 개발 편의를 위해, 이 환경변수가
+    없으면 기존처럼 로컬 파일(없으면 새로 생성)을 쓴다.
+
+    로컬 파일(.gitignore에 포함, 커밋 안 됨)이든 환경변수든, 이 서버 프로세스만
+    접근 가능하고 프론트엔드나 API 응답으로는 절대 노출하지 않는다(주소만 노출).
     """
     global _agent_keypair
     if _agent_keypair is not None:
+        return _agent_keypair
+
+    env_key = os.getenv("AGENT_WALLET_PRIVATE_KEY", "").strip()
+    if env_key:
+        _agent_keypair = Keypair.from_base58_string(env_key)
         return _agent_keypair
 
     if os.path.exists(AGENT_WALLET_PATH):
