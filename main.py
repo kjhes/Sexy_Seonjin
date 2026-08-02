@@ -495,10 +495,26 @@ def _enforce_ip_rate_limit(request: Request) -> None:
     bucket.append(now)
 
 
-def _consume_daily_gemini_quota() -> None:
+def _reset_daily_usage_if_new_day() -> None:
     today = date.today()
     if _daily_usage['date'] != today:
         _daily_usage.update(date=today, count=0)
+
+
+def _check_daily_gemini_quota_available() -> None:
+    """실제로 아직 소모하진 않고, 지금 한도가 남아있는지만 확인한다.
+    /execute/prepare에서 씀 — 실제 실행 전에 미리 걸러서, 어차피 한도 초과로
+    실패할 요청에 결제(Phantom 서명)까지 하게 만들지 않기 위함."""
+    _reset_daily_usage_if_new_day()
+    if _daily_usage['count'] >= DAILY_GEMINI_CALL_LIMIT:
+        raise HTTPException(status_code=429, detail='서버의 일일 AI 호출 한도에 도달했습니다.')
+
+
+def _consume_daily_gemini_quota() -> None:
+    """실제로 Gemini를 호출하기 직전에만 불러서 진짜로 카운트를 깎는다.
+    (prepare에서 소모해버리면, 승인만 받고 실제 실행은 안 한 요청 때문에
+    실제 호출 횟수보다 한도가 더 빨리 줄어드는 문제가 생긴다.)"""
+    _reset_daily_usage_if_new_day()
     if _daily_usage['count'] >= DAILY_GEMINI_CALL_LIMIT:
         raise HTTPException(status_code=429, detail='서버의 일일 AI 호출 한도에 도달했습니다.')
     _daily_usage['count'] += 1
@@ -1050,7 +1066,7 @@ async def prepare_execute(payload: PrepareRequestIn, request: Request) -> dict:
         }
 
     _consecutive_failures = 0
-    _consume_daily_gemini_quota()
+    _check_daily_gemini_quota_available()
     async with _prepare_lock:
         now = time.monotonic()
         expired = [key for key, value in _prepared_requests.items() if value['expires_at'] <= now]
@@ -1094,6 +1110,14 @@ async def execute_demo(payload: ExecuteRequestIn, request: Request) -> dict:
 
     _validate_chain_state(payload.plan_steps, payload.plan_step_status)
 
+    if payload.use_agent_wallet:
+        # 이 아래 _execute_via_agent_wallet가 내부적으로 /api/gemini를 자체 호출하고,
+        # 그 라우트가 이미 같은 plan_steps로 _register_plan_call_and_check_limit를
+        # 검사한다. 여기서 한 번 더 세면 계획 하나당 카운트가 두 배로 올라가서
+        # Agent Wallet 경로만 Phantom 경로보다 실질 한도가 절반이 되는 불일치가
+        # 생긴다 — 그래서 여기서는 세지 않고 /api/gemini의 검사에 맡긴다.
+        return await _execute_via_agent_wallet(payload, request_id)
+
     if _register_plan_call_and_check_limit(payload.plan_steps):
         _consecutive_failures += 1
         return {
@@ -1106,12 +1130,9 @@ async def execute_demo(payload: ExecuteRequestIn, request: Request) -> dict:
             "amount": GEMINI_PRICE_USD,
             "policy_check": [],
             "completed_steps": ["request_analysis", "price_check"],
-            "demo_mode": not payload.use_agent_wallet,
+            "demo_mode": True,
             "payment_status": "not_charged_demo",
         }
-
-    if payload.use_agent_wallet:
-        return await _execute_via_agent_wallet(payload, request_id)
 
     # Phantom 데모 경로: /execute/prepare에서 정책판단을 이미 마치고 발급한 일회성
     # 승인이 있어야만 여기로 진입할 수 있다 (승인 스냅샷과 이번 요청 내용이 달라도 거부).
@@ -1159,6 +1180,9 @@ async def execute_demo(payload: ExecuteRequestIn, request: Request) -> dict:
     # 여기서는 결제 검증만 하고, 이 승인을 다 썼으니 저장소에서 지운다(재사용 방지).
     async with _prepare_lock:
         _prepared_requests.pop(request_id, None)
+
+    # 실제로 Gemini를 부르기 직전인 지금 소모한다 (prepare 시점이 아니라).
+    _consume_daily_gemini_quota()
 
     try:
         gemini_result = await call_gemini_api(payload.prompt, payload.plan_steps, payload.plan_step_status)
