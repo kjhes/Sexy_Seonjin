@@ -56,11 +56,16 @@ CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "*").spli
 # 지갑이다 — 그래서 결제할 때 사람이 승인 팝업을 누를 필요가 없다(demo_chain.py와 동일한 방식).
 AGENT_WALLET_PATH = os.getenv("AGENT_WALLET_PATH", "agent_wallet.json")
 SELF_BASE_URL = os.getenv("SELF_BASE_URL", "http://127.0.0.1:3000")
+# policy_server.py의 /evaluate를 호출할 때 같이 보내는 인증 헤더 값.
+# policy_server.py와 반드시 같은 값이어야 한다 (거기서도 없으면 서버가 안 뜬다).
+POLICY_SHARED_SECRET = os.getenv("POLICY_SHARED_SECRET")
 
 if not SOLANA_WALLET_ADDRESS:
     raise RuntimeError("SOLANA_WALLET_ADDRESS 환경변수가 필요합니다 (.env 확인)")
 if not POLICY_ENGINE_URL:
     raise RuntimeError("POLICY_ENGINE_URL 환경변수가 필요합니다 (AI 친구 /evaluate 서버 주소)")
+if not POLICY_SHARED_SECRET:
+    raise RuntimeError("POLICY_SHARED_SECRET 환경변수가 필요합니다 (.env 확인, policy_server.py와 동일한 값 사용)")
 
 SVM_NETWORK: Network = SOLANA_DEVNET_CAIP2  # "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
 
@@ -129,6 +134,36 @@ class ExecuteRequestIn(BaseModel):
 # AI 소비자별 연속 실패 횟수 (BACKEND_연동_가이드.md의 ai_consecutive_failures).
 # 단일 프로세스 데모 서버라 프로세스 메모리에 카운터를 둔다.
 _consecutive_failures = 0
+
+
+# ---------------------------------------------------------------------------
+# 체인 스텝 하드캡 — 서버 사이드
+#
+# demo_chain.py/script.js의 MAX_STEPS는 클라이언트 측 for문일 뿐이라, 클라이언트가
+# 그걸 안 쓰고 /api/gemini나 /execute를 직접 반복 호출하면(plan_step_status를 계속
+# false로 위장해서) 서버는 이를 막을 방법이 없었다. plan_steps는 첫 호출 이후 고정
+#되므로, 이 내용 자체를 "이 체인의 식별자"로 삼아 서버가 직접 호출 횟수를 센다 —
+# 클라이언트가 plan_step_status를 뭐라고 보내든 이 카운트는 조작할 수 없다.
+# ---------------------------------------------------------------------------
+_PLAN_CALL_LIMIT = 5
+_plan_call_counts: dict[str, int] = {}
+
+
+def _plan_fingerprint(plan_steps: list[str]) -> str:
+    import hashlib
+
+    return hashlib.sha256(json.dumps(plan_steps, ensure_ascii=False).encode()).hexdigest()
+
+
+def _register_plan_call_and_check_limit(plan_steps: list[str] | None) -> bool:
+    """이 계획으로 몇 번째 호출인지 세고, 하드캡을 넘었으면 True(초과)를 반환한다.
+    plan_steps가 없는 첫 호출(계획을 만드는 호출)은 카운트하지 않는다."""
+    if not plan_steps:
+        return False
+    key = _plan_fingerprint(plan_steps)
+    count = _plan_call_counts.get(key, 0) + 1
+    _plan_call_counts[key] = count
+    return count > _PLAN_CALL_LIMIT
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +283,28 @@ async def _execute_via_agent_wallet(payload: ExecuteRequestIn, request_id: str) 
     except Exception:
         data = {}
 
+    if resp.status_code == 402:
+        # x402 클라이언트가 결제를 시도했지만 끝내 완료 못 함(대부분 Agent Wallet
+        # 잔액 부족). 정책이 거부한 게 아니라 결제 자체가 안 된 것이므로 구분한다.
+        _consecutive_failures += 1
+        return {
+            "approved": False,
+            "status": "rejected",
+            "reason": (
+                "Agent Wallet 결제가 완료되지 않았습니다. 지갑 잔액이 부족할 수 있습니다. "
+                f"(주소: {result['payer_address']}) Devnet SOL/USDC를 충전한 뒤 다시 시도해 주세요."
+            ),
+            "rejected_stage": "payment",
+            "request_id": request_id,
+            "category": "gemini",
+            "amount": GEMINI_PRICE_USD,
+            "policy_check": [],
+            "completed_steps": ["request_analysis", "price_check", "policy_check"],
+            "demo_mode": False,
+            "payment_status": "payment_failed",
+            "transaction_signature": signature,
+        }
+
     if resp.status_code != 200:
         _consecutive_failures += 1
         reason = data.get("detail") or data.get("reason") or f"HTTP {resp.status_code}"
@@ -260,7 +317,7 @@ async def _execute_via_agent_wallet(payload: ExecuteRequestIn, request_id: str) 
             "category": "gemini",
             "amount": GEMINI_PRICE_USD,
             "policy_check": (data.get("policy_decision") or {}).get("policy_check", []),
-            "completed_steps": ["request_analysis", "price_check", "policy_check"],
+            "completed_steps": ["request_analysis", "price_check"],
             "demo_mode": False,
             "payment_status": "not_charged_rejected",
             "transaction_signature": signature,
@@ -582,7 +639,7 @@ async def call_policy_engine(
     url = f"{POLICY_ENGINE_URL.rstrip('/')}/evaluate"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(url, json=body)
+            resp = await client.post(url, headers={"x-policy-secret": POLICY_SHARED_SECRET}, json=body)
             resp.raise_for_status()
             decision = resp.json()
     except Exception:
@@ -690,10 +747,10 @@ async def call_gemini_api(
         )
         schema = _CONTINUATION_SCHEMA
 
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-3.5-flash:generateContent?key={GEMINI_API_KEY}"
-    )
+    # API 키를 쿼리파라미터(?key=...)로 보내면 httpx의 INFO 레벨 요청 로그에 URL
+    # 전체(키 포함)가 그대로 찍힌다. 헤더로 보내면 로그엔 URL만 남고 키는 안 남는다.
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent"
+    headers = {"x-goog-api-key": GEMINI_API_KEY}
     body = {
         "contents": [{"parts": [{"text": contents_text}]}],
         "generationConfig": {
@@ -708,7 +765,7 @@ async def call_gemini_api(
     }
     # 첫 호출은 목표 분해 + 답변 + 단계별 판단을 한 번에 하므로 기존 30초보다 여유를 둔다.
     async with httpx.AsyncClient(timeout=90.0) as client:
-        resp = await client.post(url, json=body)
+        resp = await client.post(url, headers=headers, json=body)
         resp.raise_for_status()
         return resp.json()
 
@@ -759,6 +816,22 @@ async def execute_demo(payload: ExecuteRequestIn) -> dict:
         raise HTTPException(status_code=503, detail="The demo payment endpoint is disabled.")
 
     request_id = payload.request_id or str(uuid.uuid4())
+
+    if _register_plan_call_and_check_limit(payload.plan_steps):
+        _consecutive_failures += 1
+        return {
+            "approved": False,
+            "status": "rejected",
+            "reason": f"이 작업 계획은 이미 최대 {_PLAN_CALL_LIMIT}번 호출됐습니다. 더 이상 이어갈 수 없습니다.",
+            "rejected_stage": "policy_check",
+            "request_id": request_id,
+            "category": "gemini",
+            "amount": GEMINI_PRICE_USD,
+            "policy_check": [],
+            "completed_steps": ["request_analysis", "price_check"],
+            "demo_mode": not payload.use_agent_wallet,
+            "payment_status": "not_charged_demo",
+        }
 
     if payload.use_agent_wallet:
         return await _execute_via_agent_wallet(payload, request_id)
@@ -818,7 +891,7 @@ async def execute_demo(payload: ExecuteRequestIn) -> dict:
     try:
         url = f"{POLICY_ENGINE_URL.rstrip('/')}/evaluate"
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(url, json=policy_payload)
+            response = await client.post(url, headers={"x-policy-secret": POLICY_SHARED_SECRET}, json=policy_payload)
             response.raise_for_status()
             decision = response.json()
     except Exception as exc:
@@ -858,7 +931,12 @@ async def execute_demo(payload: ExecuteRequestIn) -> dict:
     except Exception as exc:
         _consecutive_failures += 1
         logger.exception("Gemini execution failed")
-        raise HTTPException(status_code=502, detail="Gemini execution failed.") from exc
+        # 실결제(Phantom)는 이 시점에 이미 온체인에서 확정된 뒤라 되돌릴 수 없다.
+        # 정책거절 케이스와 마찬가지로, 돈이 이미 나갔다는 걸 명확히 알려야 한다.
+        detail = "Gemini execution failed."
+        if real_payment:
+            detail += " (결제는 이미 완료되었으나 서비스 제공에는 실패했습니다)"
+        raise HTTPException(status_code=502, detail=detail) from exc
 
     _consecutive_failures = 0
     return {
@@ -890,6 +968,12 @@ async def execute_demo(payload: ExecuteRequestIn) -> dict:
 
 @app.post("/api/gemini")
 async def call_gemini(payload: GeminiRequestIn, request: Request) -> dict:
+    if _register_plan_call_and_check_limit(payload.plan_steps):
+        raise HTTPException(
+            status_code=429,
+            detail=f"이 작업 계획은 이미 최대 {_PLAN_CALL_LIMIT}번 호출됐습니다. 더 이상 이어갈 수 없습니다.",
+        )
+
     decision = await call_policy_engine(request, payload.prompt, payload.plan_steps, payload.plan_step_status)
 
     if not decision.get("approved"):

@@ -710,6 +710,29 @@ textarea {
     white-space: pre-wrap;
 }
 
+.chain-answer-item {
+    margin-top: 10px;
+    padding-top: 10px;
+
+    border-top: 1px solid var(--border);
+}
+
+.chain-answer-item:first-child {
+    margin-top: 8px;
+    padding-top: 0;
+
+    border-top: none;
+}
+
+.chain-answer-item strong {
+    display: block;
+    margin-bottom: 4px;
+}
+
+.chain-answer-item p {
+    white-space: pre-wrap;
+}
+
 .result-grid {
     margin-top: 14px;
 

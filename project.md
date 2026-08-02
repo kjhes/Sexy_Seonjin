@@ -286,5 +286,34 @@ Day1에 이 연결고리(정책규칙 전달, JSON 포맷 합의) 안 끝나면 
 - [ ] 팀 역할분담 문서의 "Pay.sh 연동" 표현을 실제 구현(= x402 표준 직접 구현, Pay.sh는 그 표준의 공식 클라이언트 중 하나로 호환 확인됨)에 맞게 팀에 공유·정정
 - [x] **지출 이중 차감 버그 수정**: `PolicyEngine.evaluate()`가 Layer1 통과 시점에 바로 `tracker.record()`를 호출해서, 뒤이어 Layer2(의미판단)가 거부해도 이미 하루 한도가 깎여 있던 문제. `evaluate()`는 더 이상 자동 커밋하지 않고, 별도 `commit()` 메서드로 분리. `policy_server.py`가 Layer1+Layer2 모두 통과했을 때만 `engine.commit()`을 호출하도록 수정. 버그 재현 테스트(`policy_engine.py` 테스트 11)로 검증 완료
 
+## 보안 점검 (2026-08-01) — 배포/자율결제 구조 도입 후 재점검
+Agent Wallet(서버가 개인키를 직접 들고 자율 서명)과 Render/Vercel 배포를 붙인 뒤,
+아래 10개 항목을 실제 코드 기준으로 점검함.
+
+- [ ] **[긴급] `GEMINI_API_KEY`가 서버 로그에 평문 노출됨** — `main.py`의 `call_gemini_api()`가
+  키를 URL 쿼리파라미터(`?key=...`)로 넘기는데, `logging.basicConfig(level=logging.INFO)`
+  때문에 httpx가 요청 URL 전체(키 포함)를 로그에 그대로 찍음. 실제로 개발 세션 중 로그에
+  키 값이 여러 번 노출된 걸 확인함 → **이미 노출된 키로 간주하고 재발급 필요**.
+  수정 방향: 쿼리파라미터 대신 `x-goog-api-key` 헤더로 전달.
+- [x] request_id 중복결제 방지는 있지만 **5분 후 만료되면 재사용(리플레이) 가능**
+  (`policy_engine.py`의 `RequestGuard.dedup_window_seconds=300.0`, 메모리 저장이라
+  서버 재시작 시에도 전부 초기화됨). 영구 저장(DB)으로 바꾸는 게 정석이지만 지금은 위험도
+  대비 비용상 보류.
+- [ ] **서버 사이드 체인 스텝 카운트 제한이 없음** — `MAX_STEPS`/`MAX_CHAIN_STEPS`가
+  `demo_chain.py`/`script.js`에만 있는 클라이언트 측 for문 캡이라, `curl`로 직접
+  `/execute`나 `/api/gemini`를 반복 호출하면 무한정 이어갈 수 있음(`plan_step_status`도
+  클라이언트가 보내는 값이라 계속 false로 위장 가능). 서버 쪽에 진짜 캡이 필요.
+- [ ] **`main.py`↔`policy_server.py` 사이에 인증이 전혀 없음** — 배포 환경에서
+  `policy_server.py`가 외부에 노출되면 누구나 `/evaluate`를 직접 호출해서 예산을
+  소진시키거나 판단을 우회할 수 있음. 공유 비밀키(예: 헤더 검증) 추가 필요.
+- [x] 결제 검증 실패 시 Gemini가 실행되지 않는 것은 확인됨(정상)
+- [ ] **Gemini 실행이 실패했을 때(정책 거부가 아니라 API 자체 크래시) "결제는 이미
+  완료됨" 안내가 빠져 있음** — `/execute`의 정책거절 케이스에는 있는데, Gemini 크래시
+  케이스는 그냥 502만 반환함. 실결제(Phantom) 상태에서 이 케이스가 나면 사용자가
+  돈이 나갔는지 헷갈릴 수 있음.
+- [x] 일일/분당 한도는 실제로는 각각 50회/5회(스펙 문서상 "100회+IP제한"은 현재
+  코드에 없는 개념 — 도입하려면 별도 논의 필요). 한도 카운트가 Gemini 호출 **성공 전에**
+  커밋되는 점도 확인함(정책 통과 시점에 커밋 — Gemini가 그 뒤 실패해도 이미 카운트됨).
+
 ## VS Code / Claude Code에서 요청할 것 (예시)
 "위 기획 기준으로, policy_engine.py를 FastAPI REST 엔드포인트로 감싸줘. 백엔드가 POST 요청으로 {amount, category} 보내면 위 JSON 포맷으로 응답하게."

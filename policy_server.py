@@ -9,17 +9,25 @@ main.py는 백엔드 친구의 x402 결제 서버가 차지하고 있어서, 이
 띄운다. .env의 POLICY_ENGINE_URL(기본 http://localhost:8000)이 이 서버를 가리킨다.
 """
 
+import hmac
 import os
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 from policy_engine import PaymentRequest, PolicyConfig, PolicyEngine, RequestGuard, SpendTracker
 from semantic_layer import SemanticGuard
 
 load_dotenv()
+
+# main.py 말고 아무나 /evaluate를 직접 호출해서 예산을 소진시키거나 판단을 우회하지
+# 못하도록, 공유 비밀키로 요청을 검증한다. 값이 없으면 인증 없이 뜨는 걸 막기 위해
+# 서버 시작 자체를 거부한다(fail-safe) — main.py의 필수 환경변수 검증과 같은 원칙.
+POLICY_SHARED_SECRET = os.environ.get("POLICY_SHARED_SECRET")
+if not POLICY_SHARED_SECRET:
+    raise RuntimeError("POLICY_SHARED_SECRET 환경변수가 필요합니다 (.env 확인, main.py와 동일한 값 사용)")
 
 app = FastAPI(title="Agentic Commerce Policy Engine")
 
@@ -59,7 +67,11 @@ class PaymentRequestIn(BaseModel):
 
 
 @app.post("/evaluate")
-def evaluate(req: PaymentRequestIn):
+def evaluate(req: PaymentRequestIn, x_policy_secret: str = Header(default="")):
+    # hmac.compare_digest로 타이밍 공격(문자를 한 글자씩 추측)을 방지한다.
+    if not hmac.compare_digest(x_policy_secret, POLICY_SHARED_SECRET):
+        raise HTTPException(status_code=401, detail="인증되지 않은 호출입니다.")
+
     request = PaymentRequest(**req.model_dump())
     result = engine.evaluate(request)
 

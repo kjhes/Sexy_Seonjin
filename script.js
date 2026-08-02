@@ -52,6 +52,12 @@ const chainProgress =
 const chainProgressText =
     document.getElementById("chainProgressText");
 
+const chainAnswers =
+    document.getElementById("chainAnswers");
+
+const chainAnswersList =
+    document.getElementById("chainAnswersList");
+
 
 const successResult =
     document.getElementById("successResult");
@@ -368,6 +374,13 @@ async function executeUserRequest(goal) {
         planStepStatus =
             data.plan_step_status || planStepStatus;
 
+        appendChainAnswer(
+            stepNumber,
+            planSteps,
+            data.answer ||
+                "실행 결과가 없습니다."
+        );
+
         updateChainProgress(
             stepNumber,
             planSteps,
@@ -525,6 +538,13 @@ async function runSingleChainCall(
         use_agent_wallet:
             useAgentWallet
     };
+
+    /*
+        실제 정책검사(+ Agent Wallet이면 결제까지)는 이 한 번의 /execute
+        호출 안에서 서버가 처리한다. 응답이 올 때까지 "AI 정책 검사"를
+        "진행 중"으로 켜둬서, 그냥 한꺼번에 완료로 점프하지 않게 한다.
+    */
+    activateProcessStep(2);
 
     let response;
 
@@ -686,6 +706,49 @@ function updateChainProgress(
 }
 
 
+/*
+    체인의 각 단계 답변이 나오는 즉시(전체 완료를 기다리지 않고) 하나씩
+    쌓아서 보여준다. 전체 완료 화면(성공 결과)은 별개로 끝에 한 번 더 뜬다.
+*/
+function appendChainAnswer(
+    stepNumber,
+    planSteps,
+    answer
+) {
+    chainAnswers.classList.remove("hidden");
+
+    const label =
+        planSteps && planSteps[stepNumber - 1]
+            ? `${stepNumber}단계 · ${planSteps[stepNumber - 1]}`
+            : `${stepNumber}단계`;
+
+    const item =
+        document.createElement("div");
+
+    item.className = "chain-answer-item";
+
+    const heading =
+        document.createElement("strong");
+
+    heading.textContent = label;
+
+    const body =
+        document.createElement("p");
+
+    body.textContent = answer;
+
+    item.appendChild(heading);
+    item.appendChild(body);
+
+    chainAnswersList.appendChild(item);
+
+    item.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest"
+    });
+}
+
+
 /* =========================
    입력값 검사
 ========================= */
@@ -740,6 +803,9 @@ function resetExecutionScreen() {
 
     chainProgress.classList.add("hidden");
     chainProgressText.textContent = "";
+
+    chainAnswers.classList.add("hidden");
+    chainAnswersList.innerHTML = "";
 
     emptyProcess.classList.add("hidden");
 

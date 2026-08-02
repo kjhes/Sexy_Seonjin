@@ -44,9 +44,10 @@ cp .env.example .env
 | `GEMINI_PRICE_USD` | Gemini 1회 호출당 청구 금액 |
 | `DEMO_MODE` | 프론트엔드용 `/execute` 엔드포인트 활성화 여부 (기본 `true`) |
 | `CORS_ORIGINS` | 프론트엔드(`index.html`)가 다른 포트에서 API를 호출할 수 있게 허용할 origin (기본 `*`) |
+| `POLICY_SHARED_SECRET` | `main.py`↔`policy_server.py` 간 인증용 공유 비밀키. **두 서버에 반드시 같은 값**을 넣어야 하고, 없으면 둘 다 시작을 거부함 (`main.py`, `policy_server.py` 공통) |
 
 `GEMINI_API_KEY`가 없어도 `policy_server.py`는 뜨지만, `user_prompt`가 포함된 요청은
-전부 자동 거부(fail-safe)된다.
+전부 자동 거부(fail-safe)된다. `POLICY_SHARED_SECRET`이 없으면 아예 서버가 안 뜬다.
 
 ## 4. 실행 (두 서버 다 띄워야 함)
 
