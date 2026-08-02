@@ -579,6 +579,15 @@ async function runSingleChainCall(
         appState.currentRequestId = prepared.request_id;
         completeProcessStep(2);
 
+        // Never send an unsigned demo execution to a production backend.
+        if (prepared.demo_mode === false && !shouldPayForReal) {
+            failProcessStep(3, "Wallet required");
+            showSystemError(
+                "Connect Phantom and select Phantom payment to continue."
+            );
+            return null;
+        }
+
         if (shouldPayForReal) {
             activateProcessStep(3);
 
@@ -599,6 +608,14 @@ async function runSingleChainCall(
                         : error.message || "지갑 결제에 실패했습니다."
                 );
 
+                return null;
+            }
+
+            if (prepared.demo_mode === false && !transactionSignature) {
+                failProcessStep(3, "Missing payment signature");
+                showSystemError(
+                    "The execution request was stopped because no payment signature was returned."
+                );
                 return null;
             }
         }

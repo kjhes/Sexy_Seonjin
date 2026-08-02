@@ -1009,8 +1009,6 @@ def _approval_snapshot(payload: PrepareRequestIn | ExecuteRequestIn) -> dict:
 @app.post('/execute/prepare')
 async def prepare_execute(payload: PrepareRequestIn, request: Request) -> dict:
     global _consecutive_failures
-    if not DEMO_MODE:
-        raise HTTPException(status_code=503, detail='The demo payment endpoint is disabled.')
     _enforce_ip_rate_limit(request)
     _validate_chain_state(payload.plan_steps, payload.plan_step_status)
 
@@ -1086,6 +1084,7 @@ async def prepare_execute(payload: PrepareRequestIn, request: Request) -> dict:
         'amount': GEMINI_PRICE_USD,
         'recipient_address': SOLANA_WALLET_ADDRESS,
         'network': 'solana-devnet',
+        'demo_mode': DEMO_MODE,
         'asset': 'USDC',
         'policy_check': decision.get('policy_check', []),
         'expires_in': PREPARE_TTL_SECONDS,
@@ -1103,9 +1102,6 @@ async def execute_demo(payload: ExecuteRequestIn, request: Request) -> dict:
     """
     global _consecutive_failures
 
-    if not DEMO_MODE:
-        raise HTTPException(status_code=503, detail="The demo payment endpoint is disabled.")
-
     request_id = payload.request_id or str(uuid.uuid4())
 
     _validate_chain_state(payload.plan_steps, payload.plan_step_status)
@@ -1117,6 +1113,14 @@ async def execute_demo(payload: ExecuteRequestIn, request: Request) -> dict:
         # Agent Wallet 경로만 Phantom 경로보다 실질 한도가 절반이 되는 불일치가
         # 생긴다 — 그래서 여기서는 세지 않고 /api/gemini의 검사에 맡긴다.
         return await _execute_via_agent_wallet(payload, request_id)
+
+    # Production Phantom requests must include an on-chain payment signature.
+    # Check before consuming or locking the one-time approval.
+    if not DEMO_MODE and not payload.transaction_signature:
+        raise HTTPException(
+            status_code=400,
+            detail="transaction_signature is required when DEMO_MODE is false.",
+        )
 
     if _register_plan_call_and_check_limit(payload.plan_steps):
         _consecutive_failures += 1
