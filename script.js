@@ -572,7 +572,10 @@ async function runSingleChainCall(
             }
         } catch (error) {
             failProcessStep(2, "정책 검사 실패");
-            showSystemError(error.message || "정책 사전 검사에 실패했습니다.");
+            showSystemError(
+                "정책 사전 검사에 실패했습니다. 무료 서버 특성상 잠시 꺼져 있을 수 있으니 " +
+                "잠시 후 다시 시도해 주세요. 계속 안 되면 kjhes001@gmail.com 으로 문의해 주세요."
+            );
             return null;
         }
 
@@ -674,7 +677,8 @@ async function runSingleChainCall(
         failProcessStep(0, "연결 실패");
 
         showSystemError(
-            "백엔드 서버에 연결할 수 없습니다. 서버 주소와 실행 상태를 확인해 주세요."
+            "백엔드 서버에 연결할 수 없습니다. 무료 서버 특성상 잠시 꺼져 있을 수 있으니 " +
+            "잠시 후 다시 시도해 주세요. 계속 안 되면 kjhes001@gmail.com 으로 문의해 주세요."
         );
 
         return null;
@@ -2319,6 +2323,29 @@ function initializeApp() {
 
     characterCount.textContent =
         `${goalInput.value.length} / 500`;
+
+    wakeUpBackend();
+}
+
+
+/*
+    무료 서버(Render 등)는 한동안 요청이 없으면 잠들어 있다가, 다음 요청이
+    올 때 다시 깨어나는 데 시간이 걸린다. 사용자가 "실행" 버튼을 누르기 전에
+    미리 한 번 깨워두면, 실제 실행 시점엔 이미 깨어있을 확률이 높아진다.
+    실패해도 조용히 무시한다 — 여기서 안 되면 실제 실행 시점에 다시 시도되고,
+    그때도 안 되면 별도 안내 메시지가 뜬다.
+*/
+function wakeUpBackend() {
+    const backendUrl =
+        normalizeBackendUrl(
+            appState.settings.backendUrl || ""
+        );
+
+    if (!backendUrl) {
+        return;
+    }
+
+    fetch(`${backendUrl}/health`).catch(() => {});
 }
 
 
