@@ -114,7 +114,12 @@ CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "*").spli
 # 사용자의 Phantom 지갑과 별개로, 이 서버 프로세스가 개인키를 직접 들고 있는 devnet 전용
 # 지갑이다 — 그래서 결제할 때 사람이 승인 팝업을 누를 필요가 없다(demo_chain.py와 동일한 방식).
 AGENT_WALLET_PATH = os.getenv("AGENT_WALLET_PATH", "agent_wallet.json")
-SELF_BASE_URL = os.getenv("SELF_BASE_URL", "http://127.0.0.1:3000")
+# Render 같은 클라우드 배포는 실제로 뜨는 포트를 자기가 정해서 PORT 환경변수로
+# 넘겨준다. Agent Wallet이 자기 자신의 /api/gemini를 호출할 때 쓰는 이 주소가
+# 항상 3000으로 고정돼 있으면, 실제 포트가 다를 경우 자체호출이 매번 실패한다
+# (외부에서 오는 요청은 Render가 알아서 실제 포트로 라우팅해주니 안 보이던 문제).
+# 아래 uvicorn.run()도 같은 PORT를 쓰도록 맞춰서 항상 서로 일치하게 한다.
+SELF_BASE_URL = os.getenv("SELF_BASE_URL", f"http://127.0.0.1:{os.getenv('PORT', '3000')}")
 # policy_server.py의 /evaluate를 호출할 때 같이 보내는 인증 헤더 값.
 # policy_server.py와 반드시 같은 값이어야 한다 (거기서도 없으면 서버가 안 뜬다).
 POLICY_SHARED_SECRET = os.getenv("POLICY_SHARED_SECRET")
@@ -1282,4 +1287,6 @@ async def call_gemini(payload: GeminiRequestIn, request: Request) -> dict:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=3000)
+    # Render가 PORT 환경변수로 실제 뜰 포트를 지정해준다. 이걸 안 따라가면
+    # 위 SELF_BASE_URL(자기 자신 호출용 주소)과 실제 포트가 어긋난다.
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "3000")))
