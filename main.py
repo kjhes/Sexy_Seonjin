@@ -840,7 +840,9 @@ async def call_policy_engine(
 
     url = f"{POLICY_ENGINE_URL.rstrip('/')}/evaluate"
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        # Render 무료 티어처럼 정책 서버가 비활성 상태에서 잠들어 있으면
+        # 깨어나는 데 몇십 초 걸릴 수 있어서(콜드 스타트), 10초는 너무 짧다.
+        async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(url, headers={"X-Policy-Secret": POLICY_SHARED_SECRET}, json=body)
             resp.raise_for_status()
             decision = resp.json()
@@ -1054,7 +1056,8 @@ async def prepare_execute(payload: PrepareRequestIn, request: Request) -> dict:
     }
     try:
         url = POLICY_ENGINE_URL.rstrip('/') + '/evaluate'
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        # 위와 같은 이유(정책 서버 콜드 스타트 대비)로 60초로 늘림.
+        async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 url,
                 json=policy_payload,
