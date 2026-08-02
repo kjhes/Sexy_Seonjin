@@ -1,6 +1,12 @@
 .env
+.env.*
+!.env.example
 venv/
+.venv/
 __pycache__/
+*.py[cod]
 demo_wallet.json
 agent_wallet.json
+*.pem
+*.key
 tools/paysh/pay.exe

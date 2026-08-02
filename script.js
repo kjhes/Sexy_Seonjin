@@ -1,3 +1,5 @@
+// "use strict": 자바스크립트를 좀 더 엄격한 규칙으로 실행하게 하는 선언.
+// 예를 들어 선언 안 한 변수에 값을 넣으면(오타 등) 조용히 넘어가지 않고 바로 에러를 내준다.
 "use strict";
 
 
@@ -14,10 +16,42 @@
 */
 
 
+/*
+    ── 이 파일 읽을 때 헷갈리기 쉬운 JS 문법 요약 ──
+
+    const x = ...       "x라는 이름에 값을 한 번 붙이고, 다시는 다른 값으로 안 바꾼다"는 선언.
+                         (파이썬의 그냥 변수 대입과 비슷하지만, 재대입을 문법으로 막아준다)
+
+    () => { ... }        "화살표 함수". function(){...}을 짧게 쓰는 문법. 이 파일 전체에서
+                         이벤트 콜백(버튼 눌렀을 때 실행할 함수)으로 계속 나온다.
+
+    `문자열 ${값}`        "템플릿 리터럴". 문자열 안에 변수 값을 바로 끼워넣는 문법.
+                         파이썬의 f"문자열 {값}" 이랑 똑같은 역할.
+
+    async / await        "이 함수는 기다리는(비동기) 작업이 있다"는 표시(async)와,
+                         "그 작업이 끝날 때까지 여기서 기다려라"는 표시(await).
+                         파이썬의 async/await와 개념이 동일하다.
+
+    obj?.prop            "옵셔널 체이닝". obj가 null/undefined면 에러 안 내고 그냥
+                         undefined를 돌려준다. obj.prop이라고만 쓰면 obj가 없을 때 에러남.
+
+    a ?? b               "널리시 코얼레싱". a가 null 또는 undefined일 때만 b를 쓴다
+                         (a가 0이나 빈 문자열이면 a를 그대로 씀 — a || b 와는 미묘하게 다름).
+
+    { ...obj }            "스프레드(전개)". 객체나 배열의 내용물을 풀어서 새 객체/배열에
+                         복사해 넣는 문법. { ...a, ...b }는 a와 b를 합친 새 객체를 만든다.
+
+    const { x, y } = obj  "구조분해할당". obj.x, obj.y를 각각 x, y라는 이름으로 한 번에 꺼낸다.
+*/
+
+
 /* =========================
    화면 요소 가져오기
 ========================= */
 
+// document.getElementById("아이디"): index.html에 있는 그 id의 태그를 찾아서
+// 자바스크립트 객체로 돌려준다. 아래는 전부 "이 화면 요소를 나중에 조작하려고
+// 미리 이름 붙여서 저장해두는" 반복 패턴이다 (하나하나 다른 로직이 있는 게 아님).
 const goalInput =
     document.getElementById("goalInput");
 
@@ -43,6 +77,10 @@ const processList =
 const processBadge =
     document.getElementById("processBadge");
 
+// document.querySelectorAll(".process-step"): 그 CSS 클래스를 가진 요소를 "전부" 찾는다
+// (getElementById는 하나만, querySelectorAll은 여러 개를 돌려줌). 근데 그 결과가
+// 진짜 배열이 아니라 배열 비슷한 객체(NodeList)라서, 대괄호 안에 [...그것]으로
+// "스프레드"해서 진짜 배열로 바꿔준다 — 그래야 .forEach, .find 같은 배열 메서드를 자유롭게 씀.
 const processSteps =
     [...document.querySelectorAll(".process-step")];
 
@@ -185,6 +223,9 @@ const summaryPaymentMethod =
    앱 상태
 ========================= */
 
+// appState: 이 화면이 지금 어떤 상태인지(실행중인지, 지갑이 연결됐는지 등)를 전부
+// 모아놓은 하나의 객체(딕셔너리 비슷한 것). 이 파일의 함수들이 서로 정보를 주고받을 때
+// 전역 변수처럼 이 appState를 통해서 주고받는다.
 const appState = {
     running: false,
 
@@ -199,6 +240,9 @@ const appState = {
     currentTransactionSignature: "",
 
     settings: {
+        // ["a","b"].includes(x): 배열 안에 x가 있는지 true/false로 확인 (파이썬의 "x in [a,b]").
+        // 그 뒤의 "조건 ? A : B"는 삼항연산자 — 조건이 참이면 A, 거짓이면 B.
+        // 즉 "지금 로컬(개발용)에서 열었으면 로컬 서버 주소를, 아니면 배포된 주소를 써라"는 뜻.
         backendUrl:
             ["localhost", "127.0.0.1"].includes(
                 window.location.hostname
@@ -225,6 +269,9 @@ const appState = {
    입력창
 ========================= */
 
+// addEventListener("이벤트이름", 콜백함수): "이 요소에서 이 이벤트(input=타이핑,
+// click=클릭 등)가 발생하면 이 함수를 실행해라"고 등록하는 것. 두 번째 인자로 준
+// () => {...}가 화살표 함수(익명 콜백)다 — 미리 이름 붙일 필요 없이 그 자리에서 정의.
 goalInput.addEventListener("input", () => {
     characterCount.textContent =
         `${goalInput.value.length} / 500`;
@@ -243,6 +290,7 @@ startButton.addEventListener(
 );
 
 
+// 함수 이름 앞의 async: 이 함수 안에서 await(기다리는 작업)를 쓸 거라는 표시.
 async function handleStart() {
     if (appState.running) {
         return;
@@ -284,6 +332,10 @@ async function handleStart() {
     appState.currentRequestId =
         createRequestId();
 
+    // try/catch/finally: try 안의 코드를 실행하다가 에러(throw)가 나면 catch로 건너뛰고,
+    // 성공하든 실패하든 finally는 무조건 마지막에 실행된다. 파이썬의 try/except/finally와
+    // 하는 역할이 완전히 같다. 여기서는 "버튼 다시 눌러도 되게 되돌리는 처리(finally)"를
+    // 성공/실패 상관없이 항상 해주려고 이 구조를 씀.
     try {
         await executeUserRequest(goal);
 
@@ -318,7 +370,7 @@ async function handleStart() {
 
     안전장치: MAX_CHAIN_STEPS에 도달하면 강제로 멈춘다.
 */
-const MAX_CHAIN_STEPS = 5;
+const MAX_CHAIN_STEPS = 3;
 
 async function executeUserRequest(goal) {
     const backendUrl =
@@ -477,39 +529,80 @@ async function runSingleChainCall(
 
     if (useAgentWallet) {
         /*
-            Agent Wallet은 정책 통과 여부와 서명·결제가 전부 /execute 호출
-            안에서 서버 쪽에 일어난다(팝업으로 나눠 보여줄 클라이언트 단계가 없음).
-            응답이 오면 updateStepsFromResponse가 실제로 어디까지 진행됐는지
-            completed_steps를 보고 알아서 단계 표시를 채운다.
+            Agent Wallet은 /execute/prepare를 거치지 않는다 — 정책 통과 여부와
+            서명·결제가 전부 이 아래 /execute 호출 한 번 안에서 서버가 처리한다.
+            그래서 매 단계 새 request_id를 직접 만들어야 하고(안 그러면 중복
+            요청으로 거절됨), 응답이 올 때까지 "AI 정책 검사"만 미리 진행 중으로
+            켜둔다 (updateStepsFromResponse가 나머지는 응답 기준으로 채워줌).
         */
+        appState.currentRequestId = createRequestId();
+        activateProcessStep(2);
 
-    } else if (shouldPayForReal) {
-        activateProcessStep(3);
+    } else {
+        // Phantom 경로: /execute/prepare에서 정책판단을 먼저 마치고 일회성
+        // request_id를 발급받는다. 이게 있어야 /execute가 승인을 인정해준다.
+        activateProcessStep(2);
 
+        let prepared;
         try {
-            transactionSignature =
-                await payForGeminiCall(backendUrl);
-
-            completeProcessStep(3);
-
-        } catch (error) {
-            console.error(error);
-
-            failProcessStep(3, "결제 실패");
-
-            showSystemError(
-                stepNumber > 1
-                    ? `${stepNumber}단계 결제 중 오류: ${error.message || "지갑 결제에 실패했습니다."}`
-                    : error.message || "지갑 결제에 실패했습니다."
+            const prepareResponse = await fetch(
+                `${backendUrl}/execute/prepare`,
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        prompt,
+                        plan_steps: planSteps,
+                        plan_step_status: planStepStatus,
+                        wallet: {
+                            connected: appState.walletConnected,
+                            public_key: appState.walletPublicKey,
+                            balance: appState.walletBalance
+                        }
+                    })
+                }
             );
-
+            prepared = await prepareResponse.json();
+            if (!prepareResponse.ok || prepared.approved === false) {
+                failProcessStep(2, "정책 거절");
+                showRejectedResult(
+                    prepared.reason || prepared.detail || "정책 검사에서 요청이 거절되었습니다."
+                );
+                return null;
+            }
+        } catch (error) {
+            failProcessStep(2, "정책 검사 실패");
+            showSystemError(error.message || "정책 사전 검사에 실패했습니다.");
             return null;
         }
-    }
 
-    // 매 단계마다 새 request_id를 써야 한다 (같은 id를 재사용하면 중복 결제로 거절됨).
-    appState.currentRequestId =
-        createRequestId();
+        appState.currentRequestId = prepared.request_id;
+        completeProcessStep(2);
+
+        if (shouldPayForReal) {
+            activateProcessStep(3);
+
+            try {
+                transactionSignature =
+                    await payForGeminiCall(backendUrl, prepared);
+
+                completeProcessStep(3);
+
+            } catch (error) {
+                console.error(error);
+
+                failProcessStep(3, "결제 실패");
+
+                showSystemError(
+                    stepNumber > 1
+                        ? `${stepNumber}단계 결제 중 오류: ${error.message || "지갑 결제에 실패했습니다."}`
+                        : error.message || "지갑 결제에 실패했습니다."
+                );
+
+                return null;
+            }
+        }
+    }
 
     const payload = {
         prompt,
@@ -539,15 +632,12 @@ async function runSingleChainCall(
             useAgentWallet
     };
 
-    /*
-        실제 정책검사(+ Agent Wallet이면 결제까지)는 이 한 번의 /execute
-        호출 안에서 서버가 처리한다. 응답이 올 때까지 "AI 정책 검사"를
-        "진행 중"으로 켜둬서, 그냥 한꺼번에 완료로 점프하지 않게 한다.
-    */
-    activateProcessStep(2);
-
     let response;
 
+    // fetch(url, 옵션): 브라우저 내장 함수로, 다른 서버에 HTTP 요청을 보낸다
+    // (파이썬의 httpx.post()랑 같은 역할). await를 붙였으니 응답이 올 때까지 여기서 멈춰있다가,
+    // 응답이 오면 다음 줄로 넘어간다. JSON.stringify(payload)는 자바스크립트 객체를
+    // JSON 텍스트로 바꾸는 함수 (파이썬 json.dumps()와 동일).
     try {
         response = await fetch(
             `${backendUrl}/execute`,
@@ -1536,6 +1626,11 @@ connectWalletButton.addEventListener(
 
 
 async function connectPhantomWallet() {
+    // window.phantom?.solana : Phantom 확장 프로그램이 설치돼 있으면 브라우저가
+    // window.phantom.solana라는 객체를 자동으로 만들어준다. 옵셔널 체이닝(?.)을
+    // 써서, 혹시 Phantom이 없어도(window.phantom이 undefined) 에러 없이
+    // provider가 그냥 undefined가 되게 만든 것 — 그래서 바로 아래에서 안전하게
+    // "!provider"로 설치 여부를 확인할 수 있다.
     const provider =
         window?.phantom?.solana;
 
@@ -1603,10 +1698,20 @@ async function connectPhantomWallet() {
     spl-token 쪽에 ?deps=...로 web3.js 버전을 강제로 맞춰줘야 두 모듈이 같은
     PublicKey/Transaction 클래스를 쓰게 되어(안 맞으면 instanceof 검사가 깨질 수 있음).
 */
+// 이 함수를 여러 번 호출해도 패키지를 두 번 다운로드하지 않도록, 한 번 시작한
+// "다운로드 중이라는 약속"(Promise)을 이 변수에 저장해두고 재사용한다.
 let _solanaLibrariesPromise = null;
 
 function loadSolanaLibraries() {
     if (!_solanaLibrariesPromise) {
+        // import("주소"): 자바스크립트 코드를 "그 순간에" 인터넷에서 내려받아 실행하는
+        // 문법 (동적 import). 파일 맨 위에 쓰는 보통의 import와 달리, 함수 안에서
+        // 필요할 때만 불러올 수 있고, 결과가 Promise(비동기 값)로 나온다.
+        // Promise.all([...]) : 여러 개의 Promise(여기선 두 패키지 다운로드)를 동시에
+        // 시작해서, 전부 끝날 때까지 기다렸다가 결과를 배열로 모아준다.
+        // .then(([web3, splToken]) => ...) : 다 끝나면 그 결과 배열을
+        // [web3, splToken]으로 "구조분해"해서 이름 붙이고, 객체 { web3, splToken }로
+        // (짧게 쓴 표현. { web3: web3, splToken: splToken }과 같은 뜻) 정리해서 돌려준다.
         _solanaLibrariesPromise = Promise.all([
             import(
                 "https://esm.sh/@solana/web3.js@1.98.4"
@@ -1627,7 +1732,7 @@ function loadSolanaLibraries() {
     서명(signature)을 돌려준다. 이 값을 /execute에 그대로 실어 보내면
     백엔드가 온체인에서 직접 재검증한다 (main.py의 verify_onchain_usdc_payment).
 */
-async function payForGeminiCall(backendUrl) {
+async function payForGeminiCall(backendUrl, prepared) {
     const provider =
         window?.phantom?.solana;
 
@@ -1649,20 +1754,27 @@ async function payForGeminiCall(backendUrl) {
 
     const config = await configResponse.json();
 
+    // 방금 만든 loadSolanaLibraries()가 { web3, splToken } 객체를 돌려주는데,
+    // 그걸 바로 두 개의 변수 web3, splToken으로 "구조분해"해서 꺼낸다.
     const { web3, splToken } =
         await loadSolanaLibraries();
 
+    // "new 클래스이름(인자들)": 그 클래스의 새 인스턴스(객체)를 만드는 문법
+    // (파이썬의 클래스이름(인자들)과 같은 역할. 파이썬엔 new가 따로 없을 뿐).
+    // web3.Connection: 이 주소의 Solana RPC 노드에 접속하는 창구 하나를 만듦.
     const connection = new web3.Connection(
         config.rpc_url,
         "confirmed"
     );
 
+    // web3.PublicKey: 문자열로 된 지갑/토큰 주소를 실제 "주소 객체"로 감싸는 것.
+    // Solana 라이브러리 함수들은 문자열이 아니라 이 PublicKey 객체를 인자로 요구한다.
     const mint =
         new web3.PublicKey(config.usdc_mint);
 
     const recipient =
         new web3.PublicKey(
-            config.recipient_address
+            prepared.recipient_address
         );
 
     const payer =
@@ -1670,6 +1782,9 @@ async function payForGeminiCall(backendUrl) {
             appState.walletPublicKey
         );
 
+    // getAssociatedTokenAddress: "이 지갑이 이 토큰(mint)을 보관하는 계좌 주소가
+    // 어디인지" 계산해서 알려주는 함수. Solana에서 USDC 같은 토큰은 지갑 주소랑
+    // 별도로, 토큰 종류마다 전용 보관함(ATA) 주소가 따로 있다.
     const senderAta =
         await splToken.getAssociatedTokenAddress(
             mint,
@@ -1682,12 +1797,16 @@ async function payForGeminiCall(backendUrl) {
             recipient
         );
 
+    // USDC는 소수점 6자리라서, "0.005 달러"를 실제 전송 단위로 바꾸려면
+    // 0.005 * 10^6 = 5000을 만들어야 한다. 10 ** config.decimals는 "10의 decimals제곱".
     const amountRaw =
         Math.round(
-            config.price_usd *
+            prepared.amount *
             10 ** config.decimals
         );
 
+    // 트랜잭션(거래) 객체를 하나 만든다. 아래에서 여기에 "무엇을 할지"를
+    // 담은 명령어(instruction)들을 순서대로 추가해나간다.
     const transaction =
         new web3.Transaction();
 
@@ -1715,6 +1834,9 @@ async function payForGeminiCall(backendUrl) {
         )
     );
 
+    // Solana 트랜잭션은 "최근 블록해시"를 반드시 포함해야 한다 (오래된 트랜잭션이
+    // 나중에 뒤늦게 실행되는 걸 막는 안전장치). 그 값을 RPC에서 받아와서
+    // 구조분해로 blockhash, lastValidBlockHeight 두 값을 한 번에 꺼낸다.
     const {
         blockhash,
         lastValidBlockHeight
@@ -1723,11 +1845,16 @@ async function payForGeminiCall(backendUrl) {
     transaction.recentBlockhash = blockhash;
     transaction.feePayer = payer;
 
+    // 여기서 실제로 Phantom 확장 프로그램에 "이 트랜잭션에 서명해서 네트워크로
+    // 보내줘"라고 요청한다 — 이 순간 화면에 Phantom 승인 팝업이 뜬다.
+    // { signature } = ... 도 구조분해: 반환된 객체에서 signature 값만 꺼낸다.
     const { signature } =
         await provider.signAndSendTransaction(
             transaction
         );
 
+    // 블록체인에 제출됐다고 바로 끝난 게 아니라, "확정"(confirmed)될 때까지 좀
+    // 기다려야 한다. 이 줄이 그 확정을 기다리는 부분.
     await connection.confirmTransaction(
         {
             signature,
@@ -1757,6 +1884,8 @@ async function requestWalletBalance() {
         );
 
 
+    // encodeURIComponent: 문자열 안에 URL에서 특별한 의미를 가지는 문자(&, ? 등)가
+    // 있어도 안전하게 주소창에 넣을 수 있도록 이스케이프 처리해주는 내장 함수.
     try {
         const response = await fetch(
             `${backendUrl}/wallet/balance?address=${encodeURIComponent(
@@ -1774,6 +1903,8 @@ async function requestWalletBalance() {
             await response.json();
 
 
+        // a ?? b : a가 null/undefined면 b를 쓴다. 여기서는 백엔드가 usdc_balance라는
+        // 이름으로 보내든 balance라는 이름으로 보내든 상관없이 값을 받으려는 방어 코드.
         const balance =
             Number(
                 data.usdc_balance ??
@@ -1921,6 +2052,10 @@ function loadSettingsFromLocalStorage() {
             JSON.parse(savedSettings);
 
 
+        // { ...a, ...b } : a의 모든 항목을 먼저 채워넣고, 그 위에 b의 항목들을
+        // 덮어씌운 "새 객체"를 만든다. 즉 "기본 설정에, 저장해뒀던 값이 있으면
+        // 그걸로 덮어써라"는 뜻. (원본 appState.settings 자체를 바꾸는 게 아니라
+        // 완전히 새 객체를 만들어서 appState.settings에 다시 대입하는 것)
         appState.settings = {
             ...appState.settings,
             ...parsed,
@@ -2048,6 +2183,9 @@ function convertPolicyName(check) {
 ========================= */
 
 function createRequestId() {
+    // crypto.randomUUID(): 브라우저가 기본 제공하는, 절대 안 겹치는 고유 ID 생성기
+    // (파이썬의 uuid.uuid4()랑 같은 역할). 아주 오래된 브라우저는 이게 없을 수도
+    // 있어서, typeof로 "진짜 함수인지" 확인하고 없으면 아래의 수동 생성 방식으로 대체한다.
     if (
         window.crypto &&
         typeof crypto.randomUUID ===
@@ -2069,6 +2207,9 @@ function createRequestId() {
 
 
 function normalizeBackendUrl(url) {
+    // /\/+$/ 는 정규표현식(regex): "문자열 맨 끝에 있는 슬래시(/) 하나 이상"을 뜻한다.
+    // .replace(그 패턴, "")로 그 부분을 지워서, "http://a/"든 "http://a"든
+    // 항상 끝에 슬래시 없는 형태로 통일시킨다.
     return url.replace(/\/+$/, "");
 }
 
