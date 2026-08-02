@@ -165,6 +165,9 @@ const testApiButton =
 const apiConnectionStatus =
     document.getElementById("apiConnectionStatus");
 
+const clearHistoryButton =
+    document.getElementById("clearHistoryButton");
+
 
 const autoExecuteToggle =
     document.getElementById("autoExecuteToggle");
@@ -270,6 +273,8 @@ goalInput.addEventListener("input", () => {
         `${goalInput.value.length} / 500`;
 
     clearInputMessage();
+
+    saveDraftGoalToLocalStorage(goalInput.value);
 });
 
 
@@ -1174,6 +1179,25 @@ function showSuccessResult(
     );
 
 
+    saveLastResultToLocalStorage({
+        goal: goalInput.value.trim(),
+        service: getServiceName(service),
+        amount: amount.toFixed(3),
+        paymentStatus: convertPaymentStatus(
+            data.payment_status ||
+            data.paymentStatus ||
+            "confirmed"
+        ),
+        requestId:
+            data.request_id ||
+            appState.currentRequestId ||
+            "",
+        transactionSignature: signature,
+        policyChecks: data.policy_check || [],
+        demoMode: Boolean(data.demo_mode)
+    });
+
+
     successResult.scrollIntoView({
         behavior: "smooth",
         block: "start"
@@ -1491,6 +1515,22 @@ function saveSettings() {
 testApiButton.addEventListener(
     "click",
     testBackendConnection
+);
+
+
+clearHistoryButton.addEventListener(
+    "click",
+    () => {
+        if (
+            !confirm(
+                "저장된 작성 중 목표, 지갑 표시, 마지막 실행 결과를 지울까요?"
+            )
+        ) {
+            return;
+        }
+
+        clearSavedHistory();
+    }
 );
 
 
@@ -1935,6 +1975,8 @@ function updateWalletDisplay() {
     }
 
 
+    saveWalletToLocalStorage();
+
     updateWalletButtonText();
 }
 
@@ -2039,6 +2081,170 @@ function loadSettingsFromLocalStorage() {
             error
         );
     }
+}
+
+
+/*
+    새로고침하거나 브라우저를 닫았다 열어도 "결제수단 외에" 몇 가지 비민감
+    UI 상태(작성 중이던 목표, 지갑 공개주소, 마지막 실행 결과)가 사라지지
+    않도록 localStorage에 저장한다.
+
+    절대 여기에 개인키/API 키/POLICY_SHARED_SECRET 같은 민감정보는 저장하지
+    않는다 — 애초에 이 파일(script.js)에는 그런 값이 존재하지도 않고,
+    Agent Wallet 개인키와 서버 시크릿은 오직 백엔드 환경변수에서만 관리된다.
+
+    주의: 여기 저장하는 "마지막 실행 결과"는 화면 표시용 스냅샷일 뿐이다.
+    진행 중인 결제/request_id의 진짜 상태는 항상 그 순간의 백엔드 응답을
+    따르고, 이 저장값만 보고 이미 결제 완료라고 재처리하지 않는다.
+*/
+const DRAFT_GOAL_KEY = "jacAutoPayDraftGoal";
+const WALLET_STORAGE_KEY = "jacAutoPayWallet";
+const LAST_RESULT_KEY = "jacAutoPayLastResult";
+
+
+function saveDraftGoalToLocalStorage(value) {
+    if (value) {
+        localStorage.setItem(DRAFT_GOAL_KEY, value);
+    } else {
+        localStorage.removeItem(DRAFT_GOAL_KEY);
+    }
+}
+
+
+function loadDraftGoalFromLocalStorage() {
+    const draft = localStorage.getItem(DRAFT_GOAL_KEY);
+
+    if (!draft) {
+        return;
+    }
+
+    goalInput.value = draft;
+}
+
+
+function saveWalletToLocalStorage() {
+    if (appState.walletConnected && appState.walletPublicKey) {
+        localStorage.setItem(
+            WALLET_STORAGE_KEY,
+            JSON.stringify({
+                walletPublicKey: appState.walletPublicKey
+            })
+        );
+    } else {
+        localStorage.removeItem(WALLET_STORAGE_KEY);
+    }
+}
+
+
+/*
+    지갑 "연결됨" 표시만 복원한다. Phantom과의 실제 연결은 브라우저 보안모델상
+    자동으로 되살릴 수 없어서, 실제 결제를 시도하는 순간 정상적인 지갑 연결
+    절차(서명 등)를 다시 거치게 된다 — 여기서는 그냥 새로고침해도 아까 보이던
+    주소가 화면에서 갑자기 사라지지 않게만 해준다.
+*/
+function restoreWalletFromLocalStorage() {
+    const saved = localStorage.getItem(WALLET_STORAGE_KEY);
+
+    if (!saved) {
+        return;
+    }
+
+    try {
+        const parsed = JSON.parse(saved);
+
+        if (parsed.walletPublicKey) {
+            appState.walletConnected = true;
+            appState.walletPublicKey = parsed.walletPublicKey;
+        }
+
+    } catch (error) {
+        console.warn("저장된 지갑 정보를 불러오지 못했습니다.", error);
+    }
+}
+
+
+function saveLastResultToLocalStorage(summary) {
+    localStorage.setItem(LAST_RESULT_KEY, JSON.stringify(summary));
+}
+
+
+/*
+    새로고침/재접속 시 "마지막 실행 결과" 화면을 다시 보여준다. request_id를
+    다시 실행하거나 결제를 재시도하는 게 아니라 순전히 표시만 복원하는 것이다.
+*/
+function restoreLastResultFromLocalStorage() {
+    const saved = localStorage.getItem(LAST_RESULT_KEY);
+
+    if (!saved) {
+        return;
+    }
+
+    let summary;
+    try {
+        summary = JSON.parse(saved);
+    } catch (error) {
+        console.warn("저장된 실행 결과를 불러오지 못했습니다.", error);
+        return;
+    }
+
+    emptyProcess.classList.add("hidden");
+    successResult.classList.remove("hidden");
+
+    processBadge.textContent = "이전 실행 결과 (복원됨)";
+    processBadge.className = "process-badge success";
+
+    resultService.textContent = summary.service || "-";
+    resultAmount.textContent = `${summary.amount || "0.000"} USDC`;
+    resultPaymentStatus.textContent = summary.paymentStatus || "-";
+    resultRequestId.textContent = shortenText(summary.requestId || "-", 22);
+
+    transactionSignature.textContent = summary.transactionSignature
+        ? shortenAddress(summary.transactionSignature)
+        : "트랜잭션 정보 없음";
+
+    copyTransactionButton.disabled = !summary.transactionSignature;
+
+    appState.currentTransactionSignature = summary.transactionSignature || "";
+    appState.currentRequestId = summary.requestId || "";
+
+    renderPolicyChecks(summary.policyChecks || []);
+
+    if (summary.demoMode) {
+        demoModeNote.textContent =
+            "[DEMO] 정책 검사는 실행되었지만 USDC는 결제되지 않았습니다.";
+
+        demoModeNote.classList.remove("hidden");
+    }
+}
+
+
+/* 설정창의 "기록 초기화" 버튼 — 저장된 화면 상태를 전부 지우고 초기 화면으로 되돌린다. */
+function clearSavedHistory() {
+    localStorage.removeItem(DRAFT_GOAL_KEY);
+    localStorage.removeItem(WALLET_STORAGE_KEY);
+    localStorage.removeItem(LAST_RESULT_KEY);
+
+    goalInput.value = "";
+    characterCount.textContent = "0 / 500";
+    clearInputMessage();
+
+    appState.walletConnected = false;
+    appState.walletPublicKey = "";
+    appState.walletBalance = null;
+    updateWalletDisplay();
+
+    hideAllResults();
+
+    chainProgress.classList.add("hidden");
+    chainProgressList.innerHTML = "";
+
+    chainAnswers.classList.add("hidden");
+    chainAnswersList.innerHTML = "";
+
+    emptyProcess.classList.remove("hidden");
+
+    processBadge.textContent = "실행 대기";
+    processBadge.className = "process-badge waiting";
 }
 
 
@@ -2257,6 +2463,8 @@ function shortenText(
 
 function initializeApp() {
     loadSettingsFromLocalStorage();
+    loadDraftGoalFromLocalStorage();
+    restoreWalletFromLocalStorage();
 
     updateSettingsSummary();
 
@@ -2264,6 +2472,8 @@ function initializeApp() {
 
     characterCount.textContent =
         `${goalInput.value.length} / 500`;
+
+    restoreLastResultFromLocalStorage();
 
     wakeUpBackend();
 }

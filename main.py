@@ -237,7 +237,9 @@ class PrepareRequestIn(BaseModel):
 
 # AI 소비자별 연속 실패 횟수 (BACKEND_연동_가이드.md의 ai_consecutive_failures).
 # 단일 프로세스 데모 서버라 프로세스 메모리에 카운터를 둔다.
-_consecutive_failures = 0
+# 호출자(IP)별로 분리해서 센다 — 한 사용자의 실패가 다른 사용자의 요청까지
+# 막아버리는 걸 막기 위함(예전엔 프로세스 전역 int 하나였음).
+_ai_failure_counts: dict[str, int] = {}
 _prepared_requests: dict[str, dict] = {}
 _prepare_lock = asyncio.Lock()
 _ip_request_times: dict[str, deque[float]] = defaultdict(deque)
@@ -395,14 +397,16 @@ async def call_gemini_via_agent_wallet(
 
 async def _execute_via_agent_wallet(payload: ExecuteRequestIn, request_id: str, origin_client_ip: str) -> dict:
     """/execute를 Agent Wallet 경로로 처리한다 — Phantom 팝업 없이 서버가 스스로 결제한다."""
-    global _consecutive_failures
-
     try:
         result = await call_gemini_via_agent_wallet(
             payload.prompt, payload.plan_steps, payload.plan_step_status, origin_client_ip
         )
     except Exception as exc:
-        _consecutive_failures += 1
+        # 이 예외는 x402 결제 클라이언트/서명/RPC 계층에서 나는 것이라(아래
+        # call_gemini_via_agent_wallet는 자체 호출한 /api/gemini의 HTTP 응답을
+        # 돌려주는 구조), 실제 Gemini 실패가 아니라 결제/인프라 문제다.
+        # AI 실패 카운터는 건드리지 않는다 — 진짜 Gemini 실패는 /api/gemini
+        # 자신이 이미 세고 있다(_register_ai_failure).
         logger.exception("Agent Wallet 자율 결제 실패")
         raise HTTPException(status_code=502, detail="Agent Wallet 결제 처리 중 오류가 발생했습니다.") from exc
 
@@ -416,8 +420,8 @@ async def _execute_via_agent_wallet(payload: ExecuteRequestIn, request_id: str, 
 
     if resp.status_code == 402:
         # x402 클라이언트가 결제를 시도했지만 끝내 완료 못 함(대부분 Agent Wallet
-        # 잔액 부족). 정책이 거부한 게 아니라 결제 자체가 안 된 것이므로 구분한다.
-        _consecutive_failures += 1
+        # 잔액 부족). 정책이 거부한 게 아니라 결제 자체가 안 된 것이므로 구분하고,
+        # AI 실패로도 세지 않는다(결제 문제일 뿐 Gemini가 실패한 게 아님).
         return {
             "approved": False,
             "status": "rejected",
@@ -437,7 +441,11 @@ async def _execute_via_agent_wallet(payload: ExecuteRequestIn, request_id: str, 
         }
 
     if resp.status_code != 200:
-        _consecutive_failures += 1
+        # 이 분기는 정책 거절(403)이나 계획-호출 한도 초과(429)뿐 아니라, 진짜
+        # Gemini 실패로 인한 502도 포함할 수 있다 — 하지만 후자의 경우 이미
+        # /api/gemini 자신이 _register_ai_failure를 호출했으므로, 여기서
+        # 또 세면 같은 실패 하나를 두 번 세게 된다. 그래서 여기서는 카운터를
+        # 건드리지 않는다.
         reason = data.get("detail") or data.get("reason") or f"HTTP {resp.status_code}"
         return {
             "approved": False,
@@ -453,8 +461,6 @@ async def _execute_via_agent_wallet(payload: ExecuteRequestIn, request_id: str, 
             "payment_status": "not_charged_rejected",
             "transaction_signature": signature,
         }
-
-    _consecutive_failures = 0
 
     return {
         "approved": True,
@@ -526,6 +532,26 @@ def _effective_client_ip(request: Request) -> str:
         if origin:
             return origin
     return client_ip
+
+
+# ---------------------------------------------------------------------------
+# AI(Gemini) 연속 실패 카운터 — 호출자별로 분리
+#
+# "AI 실패"는 진짜로 Gemini 호출/응답 파싱이 실패한 경우만 센다. 정책 거절,
+# 계획-호출 한도 초과, 지갑 잔액 부족, 결제 검증 실패 같은 정상적인 거절은
+# 절대 여기 포함하지 않는다 — 그런 것까지 세면 사용자가 정책을 몇 번 어겼다는
+# 이유만으로 "AI가 반복 실패했다"는 무관한 사유로 차단당하게 된다.
+# ---------------------------------------------------------------------------
+def _register_ai_failure(scope_key: str) -> None:
+    _ai_failure_counts[scope_key] = _ai_failure_counts.get(scope_key, 0) + 1
+
+
+def _reset_ai_failures(scope_key: str) -> None:
+    _ai_failure_counts[scope_key] = 0
+
+
+def _get_ai_failure_count(scope_key: str) -> int:
+    return _ai_failure_counts.get(scope_key, 0)
 
 
 def _enforce_ip_rate_limit(request: Request) -> None:
@@ -834,7 +860,7 @@ async def call_policy_engine(
       USDC 잔액. 조회에 실패하면 fail-safe로 0.0 + infra_stable=False를 보낸다
       (BACKEND_연동_가이드.md: 값을 비우면 항상 통과로 오인되므로 반드시 채워야 함).
     """
-    global _consecutive_failures
+    scope_key = _effective_client_ip(request)
 
     payer_address = extract_payer_wallet(request)
     wallet_connected = payer_address is not None
@@ -857,7 +883,7 @@ async def call_policy_engine(
         "api_key_valid": bool(GEMINI_API_KEY),
         "recipient_address": SOLANA_WALLET_ADDRESS,
         "request_id": str(uuid.uuid4()),
-        "ai_consecutive_failures": _consecutive_failures,
+        "ai_consecutive_failures": _get_ai_failure_count(scope_key),
         "has_required_permission": True,
         "infra_stable": infra_stable,
         "user_prompt": _semantic_check_prompt(prompt, plan_steps, plan_step_status),
@@ -873,15 +899,14 @@ async def call_policy_engine(
             resp.raise_for_status()
             decision = resp.json()
     except Exception:
+        # 정책 서버 자체를 못 불렀다는 뜻이라 인프라 문제지, "AI(Gemini)가 실패"한
+        # 게 아니다 — 그래서 AI 실패 카운터에는 포함하지 않는다.
         logger.exception("정책 엔진(/evaluate) 호출 실패")
-        _consecutive_failures += 1
         raise
 
-    if not decision.get("approved"):
-        _consecutive_failures += 1
-    else:
-        _consecutive_failures = 0
-
+    # 정책이 거절해도 "AI가 실패"한 게 아니라 정책이 정상적으로 판단한 것이므로
+    # 여기서는 실패 카운터를 건드리지 않는다. 진짜 AI 실패 카운트/리셋은 이 결정
+    # 이후 실제로 Gemini를 호출하는 지점(각 라우트)에서 처리한다.
     return decision
 
 
@@ -1053,7 +1078,7 @@ def _approval_snapshot(payload: PrepareRequestIn | ExecuteRequestIn) -> dict:
 
 @app.post('/execute/prepare')
 async def prepare_execute(payload: PrepareRequestIn, request: Request) -> dict:
-    global _consecutive_failures
+    scope_key = _client_ip(request)
     _enforce_ip_rate_limit(request)
     _validate_chain_state(payload.plan_steps, payload.plan_step_status)
 
@@ -1074,7 +1099,7 @@ async def prepare_execute(payload: PrepareRequestIn, request: Request) -> dict:
         'api_key_valid': bool(GEMINI_API_KEY),
         'recipient_address': SOLANA_WALLET_ADDRESS,
         'request_id': request_id,
-        'ai_consecutive_failures': _consecutive_failures,
+        'ai_consecutive_failures': _get_ai_failure_count(scope_key),
         'has_required_permission': True,
         'infra_stable': True,
         'user_prompt': _semantic_check_prompt(payload.prompt, payload.plan_steps, payload.plan_step_status),
@@ -1092,12 +1117,15 @@ async def prepare_execute(payload: PrepareRequestIn, request: Request) -> dict:
             response.raise_for_status()
             decision = response.json()
     except Exception as exc:
-        _consecutive_failures += 1
+        # 정책 서버 자체에 연결이 안 된 것 — 인프라 문제지 AI 실패가 아니므로
+        # 카운터에 포함하지 않는다.
         logger.exception('Prepare policy evaluation failed')
         raise HTTPException(status_code=502, detail='Policy server is unavailable.') from exc
 
     if not decision.get('approved'):
-        _consecutive_failures += 1
+        # 정책이 정상적으로 거절한 것 — AI(Gemini)가 실패한 게 아니므로
+        # 여기서는 AI 실패 카운터를 건드리지 않는다(prepare 단계는 결제/실행
+        # 이전이라 애초에 Gemini를 부르지도 않았음).
         return {
             'approved': False,
             'status': 'rejected',
@@ -1109,7 +1137,6 @@ async def prepare_execute(payload: PrepareRequestIn, request: Request) -> dict:
             'payment_status': 'not_charged',
         }
 
-    _consecutive_failures = 0
     _check_daily_gemini_quota_available()
     async with _prepare_lock:
         now = time.monotonic()
@@ -1146,7 +1173,7 @@ async def execute_demo(payload: ExecuteRequestIn, request: Request) -> dict:
     devnet USDC 결제를 온체인에서 검증하고, 서명이 없으면 데모(미결제)로 처리한 뒤
     Gemini를 실행한다. 이 단계에서는 정책을 다시 판단해 결제 후 거절하지 않는다.
     """
-    global _consecutive_failures
+    scope_key = _client_ip(request)
 
     request_id = payload.request_id or str(uuid.uuid4())
 
@@ -1168,8 +1195,8 @@ async def execute_demo(payload: ExecuteRequestIn, request: Request) -> dict:
             detail="transaction_signature is required when DEMO_MODE is false.",
         )
 
-    if _register_plan_call_and_check_limit(payload.plan_steps, _client_ip(request)):
-        _consecutive_failures += 1
+    if _register_plan_call_and_check_limit(payload.plan_steps, scope_key):
+        # 한도 초과는 정상적인 거절 사유지 AI 실패가 아니므로 카운터를 건드리지 않는다.
         return {
             "approved": False,
             "status": "rejected",
@@ -1206,7 +1233,7 @@ async def execute_demo(payload: ExecuteRequestIn, request: Request) -> dict:
     if payload.transaction_signature:
         payer_address = await verify_onchain_usdc_payment(payload.transaction_signature, GEMINI_PRICE_USD)
         if payer_address is None:
-            _consecutive_failures += 1
+            # 온체인 결제 검증 실패는 결제 문제지 AI 실패가 아니므로 카운터에서 뺀다.
             async with _prepare_lock:
                 if request_id in _prepared_requests:
                     _prepared_requests[request_id]['status'] = 'approved'
@@ -1238,10 +1265,12 @@ async def execute_demo(payload: ExecuteRequestIn, request: Request) -> dict:
         gemini_result = await call_gemini_api(payload.prompt, payload.plan_steps, payload.plan_step_status)
         chain_result = _extract_chain_result(gemini_result, payload.plan_steps, payload.plan_step_status)
     except HTTPException:
-        _consecutive_failures += 1
+        # 여기서부터는 정책/결제가 이미 다 끝난 뒤라, 여기서 나는 예외는 진짜로
+        # Gemini 호출/응답 처리가 실패한 경우다 — 이게 AI 실패의 진짜 정의.
+        _register_ai_failure(scope_key)
         raise
     except Exception as exc:
-        _consecutive_failures += 1
+        _register_ai_failure(scope_key)
         logger.exception("Gemini execution failed")
         # 실결제(Phantom)는 이 시점에 이미 온체인에서 확정된 뒤라 되돌릴 수 없다.
         # 정책거절 케이스와 마찬가지로, 돈이 이미 나갔다는 걸 명확히 알려야 한다.
@@ -1250,7 +1279,7 @@ async def execute_demo(payload: ExecuteRequestIn, request: Request) -> dict:
             detail += " (결제는 이미 완료되었으나 서비스 제공에는 실패했습니다)"
         raise HTTPException(status_code=502, detail=detail) from exc
 
-    _consecutive_failures = 0
+    _reset_ai_failures(scope_key)
     return {
         "approved": True,
         "status": "completed",
@@ -1298,8 +1327,19 @@ async def call_gemini(payload: GeminiRequestIn, request: Request) -> dict:
         )
 
     _consume_daily_gemini_quota()
-    gemini_result = await call_gemini_api(payload.prompt, payload.plan_steps, payload.plan_step_status)
-    chain_result = _extract_chain_result(gemini_result, payload.plan_steps, payload.plan_step_status)
+
+    scope_key = _effective_client_ip(request)
+    try:
+        gemini_result = await call_gemini_api(payload.prompt, payload.plan_steps, payload.plan_step_status)
+        chain_result = _extract_chain_result(gemini_result, payload.plan_steps, payload.plan_step_status)
+    except Exception as exc:
+        # 여기 오는 예외는 정책/결제와 무관하게 실제로 Gemini 호출이나 응답
+        # 파싱이 실패한 경우다 — 이게 "AI 실패"의 진짜 정의라 여기서만 센다.
+        _register_ai_failure(scope_key)
+        logger.exception("Gemini 호출/응답 처리 실패")
+        raise HTTPException(status_code=502, detail="Gemini 실행 중 오류가 발생했습니다.") from exc
+
+    _reset_ai_failures(scope_key)
 
     return {
         "approved": True,
