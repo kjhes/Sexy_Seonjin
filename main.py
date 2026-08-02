@@ -265,12 +265,17 @@ def _plan_fingerprint(plan_steps: list[str]) -> str:
     return hashlib.sha256(json.dumps(plan_steps, ensure_ascii=False).encode()).hexdigest()
 
 
-def _register_plan_call_and_check_limit(plan_steps: list[str] | None) -> bool:
+def _register_plan_call_and_check_limit(plan_steps: list[str] | None, scope_key: str) -> bool:
     """이 계획으로 몇 번째 호출인지 세고, 하드캡을 넘었으면 True(초과)를 반환한다.
-    plan_steps가 없는 첫 호출(계획을 만드는 호출)은 카운트하지 않는다."""
+    plan_steps가 없는 첫 호출(계획을 만드는 호출)은 카운트하지 않는다.
+
+    scope_key(보통 호출자 IP)를 계획 해시와 같이 묶어서 카운트한다 — 계획 해시만
+    쓰면 서로 다른 사용자가 우연히 같은 프롬프트를 시도했을 때 한 사람이 다른
+    사람의 한도를 같이 써버리는 문제가 생긴다.
+    """
     if not plan_steps:
         return False
-    key = _plan_fingerprint(plan_steps)
+    key = f"{scope_key}:{_plan_fingerprint(plan_steps)}"
     count = _plan_call_counts.get(key, 0) + 1
     _plan_call_counts[key] = count
     return count > _PLAN_CALL_LIMIT
@@ -350,6 +355,7 @@ async def call_gemini_via_agent_wallet(
     prompt: str,
     plan_steps: list[str] | None,
     plan_step_status: list[bool] | None,
+    origin_client_ip: str,
 ) -> dict:
     """Agent Wallet이 사람 승인 없이 스스로 서명해서 /api/gemini를 호출한다.
 
@@ -377,6 +383,7 @@ async def call_gemini_via_agent_wallet(
                 "plan_steps": plan_steps,
                 "plan_step_status": plan_step_status,
             },
+            headers={"X-Origin-Client-Ip": origin_client_ip},
         )
 
     return {
@@ -386,12 +393,14 @@ async def call_gemini_via_agent_wallet(
     }
 
 
-async def _execute_via_agent_wallet(payload: ExecuteRequestIn, request_id: str) -> dict:
+async def _execute_via_agent_wallet(payload: ExecuteRequestIn, request_id: str, origin_client_ip: str) -> dict:
     """/execute를 Agent Wallet 경로로 처리한다 — Phantom 팝업 없이 서버가 스스로 결제한다."""
     global _consecutive_failures
 
     try:
-        result = await call_gemini_via_agent_wallet(payload.prompt, payload.plan_steps, payload.plan_step_status)
+        result = await call_gemini_via_agent_wallet(
+            payload.prompt, payload.plan_steps, payload.plan_step_status, origin_client_ip
+        )
     except Exception as exc:
         _consecutive_failures += 1
         logger.exception("Agent Wallet 자율 결제 실패")
@@ -500,6 +509,23 @@ def _validate_chain_state(plan_steps: list[str] | None, plan_step_status: list[b
 
 def _client_ip(request: Request) -> str:
     return request.client.host if request.client else 'unknown'
+
+
+def _effective_client_ip(request: Request) -> str:
+    """계획-호출 한도 등 "누가 불렀는지"를 구분해야 하는 검사에 쓸 IP를 계산한다.
+
+    Agent Wallet 경로는 서버가 자기 자신(localhost)의 /api/gemini를 다시 호출하는
+    구조라, 그 요청만 보면 항상 127.0.0.1로 보여서 서로 다른 사용자를 구분할 수
+    없다. 그래서 자체 호출 시에는 원래 바깥 요청자의 IP를 헤더로 실어 보내고,
+    여기서는 "실제 접속이 localhost에서 온 경우에만" 그 헤더를 신뢰한다 — 외부에서
+    직접 이 헤더를 위조해 보내도, 접속 자체가 localhost가 아니므로 무시된다.
+    """
+    client_ip = _client_ip(request)
+    if client_ip in ('127.0.0.1', '::1'):
+        origin = request.headers.get('x-origin-client-ip')
+        if origin:
+            return origin
+    return client_ip
 
 
 def _enforce_ip_rate_limit(request: Request) -> None:
@@ -1132,7 +1158,7 @@ async def execute_demo(payload: ExecuteRequestIn, request: Request) -> dict:
         # 검사한다. 여기서 한 번 더 세면 계획 하나당 카운트가 두 배로 올라가서
         # Agent Wallet 경로만 Phantom 경로보다 실질 한도가 절반이 되는 불일치가
         # 생긴다 — 그래서 여기서는 세지 않고 /api/gemini의 검사에 맡긴다.
-        return await _execute_via_agent_wallet(payload, request_id)
+        return await _execute_via_agent_wallet(payload, request_id, _client_ip(request))
 
     # Production Phantom requests must include an on-chain payment signature.
     # Check before consuming or locking the one-time approval.
@@ -1142,7 +1168,7 @@ async def execute_demo(payload: ExecuteRequestIn, request: Request) -> dict:
             detail="transaction_signature is required when DEMO_MODE is false.",
         )
 
-    if _register_plan_call_and_check_limit(payload.plan_steps):
+    if _register_plan_call_and_check_limit(payload.plan_steps, _client_ip(request)):
         _consecutive_failures += 1
         return {
             "approved": False,
@@ -1257,7 +1283,7 @@ async def call_gemini(payload: GeminiRequestIn, request: Request) -> dict:
     _enforce_ip_rate_limit(request)
     _validate_chain_state(payload.plan_steps, payload.plan_step_status)
 
-    if _register_plan_call_and_check_limit(payload.plan_steps):
+    if _register_plan_call_and_check_limit(payload.plan_steps, _effective_client_ip(request)):
         raise HTTPException(
             status_code=429,
             detail=f"이 작업 계획은 이미 최대 {_PLAN_CALL_LIMIT}번 호출됐습니다. 더 이상 이어갈 수 없습니다.",
