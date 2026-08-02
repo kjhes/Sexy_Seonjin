@@ -904,7 +904,7 @@ function buildStepCardElement(
         document.createElement("span");
 
     purposeLabel.className = "chain-step-label";
-    purposeLabel.textContent = "목적";
+    purposeLabel.textContent = "프롬프트";
 
     const purposeText =
         document.createElement("span");
@@ -925,7 +925,7 @@ function buildStepCardElement(
         document.createElement("span");
 
     resultLabel.className = "chain-step-label";
-    resultLabel.textContent = "결과";
+    resultLabel.textContent = `${stepNumber}차 반환`;
 
     const resultBody =
         document.createElement("div");
