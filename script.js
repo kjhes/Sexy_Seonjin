@@ -77,8 +77,8 @@ const processBadge =
 const chainProgress =
     document.getElementById("chainProgress");
 
-const chainProgressText =
-    document.getElementById("chainProgressText");
+const chainProgressList =
+    document.getElementById("chainProgressList");
 
 const chainAnswers =
     document.getElementById("chainAnswers");
@@ -100,8 +100,8 @@ const errorResult =
     document.getElementById("errorResult");
 
 
-const resultAnswer =
-    document.getElementById("resultAnswer");
+const demoModeNote =
+    document.getElementById("demoModeNote");
 
 const resultService =
     document.getElementById("resultService");
@@ -375,7 +375,6 @@ async function executeUserRequest(goal) {
     let planSteps = null;
     let planStepStatus = null;
 
-    const stepAnswers = [];
     let totalAmount = 0;
     let lastData = null;
 
@@ -406,14 +405,6 @@ async function executeUserRequest(goal) {
         lastData = data;
         totalAmount += Number(data.amount ?? 0);
 
-        stepAnswers.push({
-            stepNumber,
-            prompt,
-            answer:
-                data.answer ||
-                "실행 결과가 없습니다."
-        });
-
         planSteps =
             data.plan_steps || planSteps;
 
@@ -437,7 +428,6 @@ async function executeUserRequest(goal) {
         if (data.task_complete) {
             showSuccessResult(
                 lastData,
-                stepAnswers,
                 totalAmount
             );
 
@@ -448,7 +438,6 @@ async function executeUserRequest(goal) {
             // task_complete=false인데 next_prompt가 없으면 안전하게 중단한다.
             showSuccessResult(
                 lastData,
-                stepAnswers,
                 totalAmount
             );
 
@@ -461,7 +450,6 @@ async function executeUserRequest(goal) {
     // 안전장치: 최대 단계 수에 도달해 강제로 종료한다.
     showSuccessResult(
         lastData,
-        stepAnswers,
         totalAmount
     );
 }
@@ -747,6 +735,11 @@ function hideStatusMessage() {
 }
 
 
+/*
+    "노트에 적어둔 체크리스트" 느낌으로 계획 단계를 보여준다. 답변 카드가
+    아무리 길게 이어져도 이 목록은 옆(사이드바)에 고정돼 있어서, 지금까지
+    뭘 끝냈고 뭐가 남았는지 스크롤 없이 한눈에 볼 수 있다.
+*/
 function updateChainProgress(
     stepNumber,
     planSteps,
@@ -759,16 +752,41 @@ function updateChainProgress(
 
     chainProgress.classList.remove("hidden");
 
-    chainProgressText.textContent =
-        planSteps
-            .map((step, index) => {
-                const done =
-                    planStepStatus &&
-                    planStepStatus[index];
+    chainProgressList.innerHTML = "";
 
-                return `${done ? "✓" : "○"} ${index + 1}. ${step}`;
-            })
-            .join("\n");
+    planSteps.forEach((step, index) => {
+        const done =
+            planStepStatus &&
+            planStepStatus[index];
+
+        const isCurrent =
+            !done && index === stepNumber - 1;
+
+        const item =
+            document.createElement("li");
+
+        item.className =
+            "chain-progress-item" +
+            (done ? " done" : "") +
+            (isCurrent ? " current" : "");
+
+        const check =
+            document.createElement("span");
+
+        check.className = "chain-progress-check";
+        check.textContent = done ? "☑" : "☐";
+
+        const label =
+            document.createElement("span");
+
+        label.className = "chain-progress-text";
+        label.textContent = `${index + 1}. ${step}`;
+
+        item.appendChild(check);
+        item.appendChild(label);
+
+        chainProgressList.appendChild(item);
+    });
 }
 
 
@@ -1030,7 +1048,7 @@ function resetExecutionScreen() {
     hideAllResults();
 
     chainProgress.classList.add("hidden");
-    chainProgressText.textContent = "";
+    chainProgressList.innerHTML = "";
 
     chainAnswers.classList.add("hidden");
     chainAnswersList.innerHTML = "";
@@ -1062,7 +1080,6 @@ function prepareProcess() {
 
 function showSuccessResult(
     data,
-    stepAnswers = null,
     totalAmount = null
 ) {
     hideAllResults();
@@ -1103,57 +1120,18 @@ function showSuccessResult(
 
 
     /*
-        여러 단계에 걸쳐 이어진 체인이면(stepAnswers.length > 1) 각 단계마다
-        "목적(무엇을 물어봤는지)"과 "결과(무엇을 답했는지)"를 실시간 패널과
-        똑같은 카드 형태로 보여줘서, 재귀호출이 어떤 근거로 이어졌는지
-        최종 화면에서도 한눈에 드러나게 한다. 단일 단계면 답변 하나만
-        보기 좋게(굵게/목록 렌더링) 보여준다.
+        답변 내용 자체는 위쪽 "단계별 답변(실시간)" 패널에 이미 카드로
+        다 나와 있으므로, 완료 화면에서 또 반복해서 보여주지 않는다.
+        여기서는 데모 모드 안내만 필요하면 띄운다.
     */
-    resultAnswer.innerHTML = "";
-
-    if (stepAnswers && stepAnswers.length > 1) {
-        stepAnswers.forEach((item) => {
-            const planStepLabel =
-                data.plan_steps &&
-                data.plan_steps[item.stepNumber - 1];
-
-            resultAnswer.appendChild(
-                buildStepCardElement(
-                    item.stepNumber,
-                    planStepLabel,
-                    item.prompt,
-                    item.answer
-                )
-            );
-        });
-
-    } else {
-        const singleAnswer =
-            (stepAnswers && stepAnswers[0]?.answer) ||
-            data.result ||
-            data.answer ||
-            data.output ||
-            "작업이 완료되었습니다.";
-
-        const body =
-            document.createElement("div");
-
-        body.className = "chain-step-result-body";
-        body.innerHTML = renderFormattedText(singleAnswer);
-
-        resultAnswer.appendChild(body);
-    }
-
     if (data.demo_mode) {
-        const demoNote =
-            document.createElement("p");
-
-        demoNote.className = "demo-mode-note";
-
-        demoNote.textContent =
+        demoModeNote.textContent =
             "[DEMO] 정책 검사는 실행되었지만 USDC는 결제되지 않았습니다.";
 
-        resultAnswer.appendChild(demoNote);
+        demoModeNote.classList.remove("hidden");
+
+    } else {
+        demoModeNote.classList.add("hidden");
     }
 
 

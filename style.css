@@ -666,7 +666,7 @@ textarea {
     display: block;
     margin-bottom: 10px;
 
-    font-size: 14px;
+    font-size: 17px;
 }
 
 .chain-step-box {
@@ -682,11 +682,11 @@ textarea {
 .chain-step-label {
     display: inline-block;
     margin-bottom: 6px;
-    padding: 2px 9px;
+    padding: 3px 10px;
 
     border-radius: 999px;
 
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 800;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -705,7 +705,7 @@ textarea {
     display: block;
 
     color: var(--text);
-    font-size: 13px;
+    font-size: 14.5px;
     font-style: italic;
 
     white-space: pre-wrap;
@@ -758,6 +758,122 @@ textarea {
 
     font-size: 12px;
     font-weight: 700;
+}
+
+
+/* =========================
+   진행 상황: 사이드바 + 본문
+========================= */
+
+/*
+    계획 체크리스트(사이드바)를 옆에 고정해두고, 답변 카드(본문)만 아래로
+    길게 늘어나게 한다. 체크리스트가 없는 단일 호출이면(#chainProgress에
+    hidden이 붙어 있으면) 옆 칸을 아예 접어서 본문이 전체 폭을 쓰게 한다.
+*/
+.process-body {
+    margin-top: 22px;
+
+    display: grid;
+    grid-template-columns: 210px 1fr;
+    align-items: start;
+    gap: 18px;
+}
+
+.process-body:has(> #chainProgress.hidden) {
+    grid-template-columns: 1fr;
+}
+
+.process-main {
+    min-width: 0;
+}
+
+/* 노트 한 장에 손으로 체크해나가는 느낌의 계획 체크리스트 */
+.chain-progress-note {
+    position: sticky;
+    top: 20px;
+
+    padding: 16px 16px 18px;
+
+    background:
+        repeating-linear-gradient(
+            var(--surface),
+            var(--surface) 30px,
+            var(--border) 31px
+        );
+
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--primary);
+    border-radius: 14px;
+
+    box-shadow: 0 10px 24px rgba(70, 105, 130, 0.08);
+}
+
+.chain-progress-note > span {
+    display: block;
+
+    color: var(--text-light);
+
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.chain-progress-list {
+    margin-top: 10px;
+
+    list-style: none;
+}
+
+.chain-progress-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 6px 0;
+
+    border-bottom: 1px dashed var(--border);
+
+    font-size: 13.5px;
+}
+
+.chain-progress-item:last-child {
+    border-bottom: none;
+}
+
+.chain-progress-check {
+    flex-shrink: 0;
+
+    color: var(--text-light);
+    font-size: 15px;
+}
+
+.chain-progress-text {
+    color: var(--text);
+
+    white-space: pre-wrap;
+}
+
+.chain-progress-item.done .chain-progress-check {
+    color: var(--success);
+}
+
+.chain-progress-item.done .chain-progress-text {
+    color: var(--text-light);
+    text-decoration: line-through;
+}
+
+.chain-progress-item.current .chain-progress-text {
+    color: var(--primary-dark);
+    font-weight: 800;
+    text-decoration: none;
+}
+
+@media (max-width: 860px) {
+    .process-body {
+        grid-template-columns: 1fr;
+    }
+
+    .chain-progress-note {
+        position: static;
+    }
 }
 
 .result-grid {

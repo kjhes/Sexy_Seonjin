@@ -259,53 +259,61 @@
             ></p>
 
 
-            <!-- 다단계 계획 진행 상황 (목표가 여러 단계로 쪼개져 이어서 호출되는 경우에만 표시) -->
-            <div
-                id="chainProgress"
-                class="answer-box hidden"
-            >
+            <div class="process-body">
 
-                <span>
-                    계획 진행 상황
-                </span>
+                <!-- 다단계 계획 진행 상황 (노트 체크리스트 형태, 옆에 고정돼서 계속 한눈에 보임) -->
+                <aside
+                    id="chainProgress"
+                    class="chain-progress-note hidden"
+                >
 
-                <p id="chainProgressText"></p>
+                    <span>
+                        계획 진행 상황
+                    </span>
 
-            </div>
+                    <ul id="chainProgressList" class="chain-progress-list"></ul>
 
-
-            <!-- 단계별 답변을 나오는 즉시 하나씩 보여주는 실시간 패널 -->
-            <div
-                id="chainAnswers"
-                class="answer-box hidden"
-            >
-
-                <span>
-                    단계별 답변 (실시간)
-                </span>
-
-                <div id="chainAnswersList"></div>
-
-            </div>
+                </aside>
 
 
-            <!-- 아직 실행 안 된 화면 -->
-            <div
-                id="emptyProcess"
-                class="empty-process"
-            >
+                <div class="process-main">
 
-                <div class="empty-process-icon">
-                    ○
+                    <!-- 단계별 답변을 나오는 즉시 하나씩 보여주는 실시간 패널 -->
+                    <div
+                        id="chainAnswers"
+                        class="answer-box hidden"
+                    >
+
+                        <span>
+                            단계별 답변 (실시간)
+                        </span>
+
+                        <div id="chainAnswersList"></div>
+
+                    </div>
+
+
+                    <!-- 아직 실행 안 된 화면 -->
+                    <div
+                        id="emptyProcess"
+                        class="empty-process"
+                    >
+
+                        <div class="empty-process-icon">
+                            ○
+                        </div>
+
+                        <strong>
+                            아직 실행된 작업이 없습니다.
+                        </strong>
+
+                        <p>
+                            작업 목표를 입력하고 시작 버튼을 눌러 주세요.
+                        </p>
+
+                    </div>
+
                 </div>
-
-                <strong>
-                    아직 실행된 작업이 없습니다.
-                </strong>
-
-                <p>
-                    작업 목표를 입력하고 시작 버튼을 눌러 주세요.
-                </p>
 
             </div>
 
@@ -340,17 +348,8 @@
             </div>
 
 
-            <div class="answer-box">
-
-                <span>
-                    AI 실행 결과
-                </span>
-
-                <div id="resultAnswer">
-                    <p>실행 결과가 여기에 표시됩니다.</p>
-                </div>
-
-            </div>
+            <!-- 답변 내용은 위 "단계별 답변" 패널에서 이미 실시간으로 다 보여줬으므로 여기선 반복하지 않는다 -->
+            <p id="demoModeNote" class="demo-mode-note hidden"></p>
 
 
             <div class="result-grid">
