@@ -96,6 +96,9 @@ const chainAnswers =
 const chainAnswersList =
     document.getElementById("chainAnswersList");
 
+const statusMessage =
+    document.getElementById("statusMessage");
+
 
 const successResult =
     document.getElementById("successResult");
@@ -504,6 +507,12 @@ async function runSingleChainCall(
     processBadge.className =
         "process-badge running";
 
+    updateStatusMessage(
+        planSteps
+            ? `${stepNumber}/${planSteps.length}단계 진행 중입니다: ${planSteps[stepNumber - 1] || "다음 단계"}...`
+            : "AI가 목표를 분석하고 계획을 구성하는 중입니다..."
+    );
+
     activateProcessStep(0);
 
     let transactionSignature = null;
@@ -544,6 +553,10 @@ async function runSingleChainCall(
         // Phantom 경로: /execute/prepare에서 정책판단을 먼저 마치고 일회성
         // request_id를 발급받는다. 이게 있어야 /execute가 승인을 인정해준다.
         activateProcessStep(2);
+
+        updateStatusMessage(
+            "정책 엔진이 결제 한도·범위·이상 패턴을 검사하는 중입니다..."
+        );
 
         let prepared;
         try {
@@ -595,6 +608,10 @@ async function runSingleChainCall(
 
         if (shouldPayForReal) {
             activateProcessStep(3);
+
+            updateStatusMessage(
+                "Phantom 지갑 서명을 기다리는 중입니다... (팝업에서 승인해 주세요)"
+            );
 
             try {
                 transactionSignature =
@@ -653,6 +670,12 @@ async function runSingleChainCall(
         use_agent_wallet:
             useAgentWallet
     };
+
+    updateStatusMessage(
+        useAgentWallet
+            ? "Agent Wallet이 정책 검사·결제·AI 실행을 자동으로 처리하는 중입니다..."
+            : "결제를 검증하고 AI 답변을 생성하는 중입니다..."
+    );
 
     let response;
 
@@ -791,6 +814,23 @@ function resetProcessStepsForNextChainStep() {
             ".step-status"
         ).textContent = "대기";
     });
+}
+
+
+/*
+    "지금 정확히 뭘 하고 있는지"를 사람이 읽는 한 줄 문장으로 실시간으로
+    보여준다 (예: "계획을 구성하는 중입니다..."). 기존 단계 체크리스트가
+    "어디까지 왔는지"를 보여준다면, 이건 "지금 이 순간 뭘 하는지"를 보여줌.
+*/
+function updateStatusMessage(text) {
+    statusMessage.classList.remove("hidden");
+    statusMessage.textContent = text;
+}
+
+
+function hideStatusMessage() {
+    statusMessage.classList.add("hidden");
+    statusMessage.textContent = "";
 }
 
 
@@ -1319,6 +1359,8 @@ function hideAllResults() {
     rejectedResult.classList.add("hidden");
 
     errorResult.classList.add("hidden");
+
+    hideStatusMessage();
 }
 
 
