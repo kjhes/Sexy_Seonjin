@@ -194,88 +194,110 @@ button:disabled {
 
 
 /*
-    예전 7단계 파이프라인을 3단계(정책검사/결제/AI실행)로 간추린 미니 진행
-    표시. 답변 카드가 아무 예고 없이 튀어나오지 않도록, 카드가 붙기 전에
-    여기서 먼저 단계가 하나씩 채워지는 걸 보여준다.
+    예전에 쓰던 7단계 파이프라인(번호 원 + 제목/설명 + 상태 텍스트)의 UI를
+    그대로 가져오되, "정책검사/결제/AI실행" 3단계로 간추렸다. 카드마다
+    새로 만들어서 그 카드 바로 위에 꽂아 넣는다.
 */
 .mini-pipeline {
     margin-top: 14px;
-    padding: 12px 18px;
+    margin-bottom: 11px;
 
-    display: flex;
-    align-items: center;
-    gap: 10px;
-
-    background: var(--background);
-
-    border: 1px solid var(--border);
-    border-radius: 14px 14px 0 0;
-}
-
-/* 파이프라인 바로 다음 카드는 "이 진행 과정의 결과"라는 게 보이도록 붙여준다. */
-.mini-pipeline + .chain-answer-item {
-    margin-top: 0;
-    border-top: none;
-    border-radius: 0 0 14px 14px;
+    display: grid;
+    gap: 11px;
 }
 
 .mini-pipeline-step {
-    display: flex;
-    align-items: center;
-    gap: 7px;
+    padding: 15px;
 
+    display: grid;
+    grid-template-columns: 42px 1fr auto;
+    align-items: center;
+    gap: 14px;
+
+    border: 1px solid var(--border);
+    border-radius: 17px;
+
+    background: var(--background);
+
+    transition:
+        transform 0.25s ease,
+        background 0.25s ease,
+        border-color 0.25s ease;
+}
+
+.mini-pipeline-step.active {
+    border-color: var(--primary);
+    background: var(--primary-soft);
+
+    transform: translateX(4px);
+}
+
+.mini-pipeline-step.done {
+    border-color: rgba(59, 155, 118, 0.35);
+    background: var(--success-soft);
+}
+
+.mini-pipeline-number {
+    width: 38px;
+    height: 38px;
+
+    display: grid;
+    place-items: center;
+
+    border-radius: 12px;
+
+    background: white;
     color: var(--text-light);
 
-    font-size: 12.5px;
-    font-weight: 800;
-    white-space: nowrap;
+    font-weight: 900;
 }
 
-.mini-pipeline-dot {
-    width: 10px;
-    height: 10px;
-    flex-shrink: 0;
-
-    border-radius: 999px;
-
-    background: var(--border);
-
-    transition: background 0.25s ease, box-shadow 0.25s ease;
-}
-
-.mini-pipeline-connector {
-    flex: 1;
-    height: 2px;
-
-    background: var(--border);
-
-    transition: background 0.25s ease;
-}
-
-.mini-pipeline-step.active .mini-pipeline-dot {
+.mini-pipeline-step.active .mini-pipeline-number {
     background: var(--primary);
-    box-shadow: 0 0 0 4px var(--primary-soft);
-
-    animation: status-pulse 1.1s ease-in-out infinite;
+    color: white;
 }
 
-.mini-pipeline-step.active .mini-pipeline-label {
+.mini-pipeline-step.done .mini-pipeline-number {
+    background: var(--success);
+    color: white;
+}
+
+.mini-pipeline-content strong {
+    display: block;
+
+    font-size: 14px;
+}
+
+.mini-pipeline-content p {
+    margin-top: 1px;
+
+    color: var(--text-light);
+    font-size: 13px;
+}
+
+.mini-pipeline-status {
+    color: var(--text-light);
+
+    font-size: 13px;
+    font-weight: 800;
+}
+
+.mini-pipeline-step.active .mini-pipeline-status {
     color: var(--primary-dark);
 }
 
-.mini-pipeline-step.done .mini-pipeline-dot {
-    background: var(--success);
-    box-shadow: none;
-
-    animation: none;
-}
-
-.mini-pipeline-step.done .mini-pipeline-label {
+.mini-pipeline-step.done .mini-pipeline-status {
     color: var(--success);
 }
 
-.mini-pipeline-connector.done {
-    background: var(--success);
+@media (max-width: 640px) {
+    .mini-pipeline-step {
+        grid-template-columns: 38px 1fr;
+    }
+
+    .mini-pipeline-status {
+        grid-column: 2;
+    }
 }
 
 

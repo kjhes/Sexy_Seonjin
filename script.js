@@ -772,14 +772,30 @@ function hideStatusMessage() {
 
 
 /*
-    예전 7단계 파이프라인(요청분석/가격확인/정책검사/결제/온체인확인/API실행/
-    결과전달)을 "정책 검사 → 결제 → AI 실행" 3단계로 간추린 미니 진행 표시.
+    예전에 쓰던 7단계 파이프라인(번호 원 + 제목/설명 + 상태 텍스트) UI를
+    그대로 재사용하되, "정책 검사 → 결제 → AI 실행" 3단계로 간추렸다.
 
     호출마다 새 파이프라인 엘리먼트를 만들어서 "그 답변 카드 바로 위"에
     꽂아 넣는다 — 그래서 체인이 길어져 카드가 여러 개 쌓여도, 각 카드마다
     자기 바로 위에 그 카드가 나오기까지의 진행 과정이 그대로 남는다.
 */
-const MINI_PIPELINE_STAGES = ["policy", "payment", "execution"];
+const MINI_PIPELINE_STAGES = [
+    {
+        key: "policy",
+        title: "정책 검사",
+        description: "결제 한도·범위·이상 패턴을 검사합니다."
+    },
+    {
+        key: "payment",
+        title: "결제",
+        description: "Solana Devnet USDC 결제를 처리합니다."
+    },
+    {
+        key: "execution",
+        title: "AI 실행",
+        description: "Gemini가 답변을 생성합니다."
+    }
+];
 
 function buildMiniPipelineElement() {
     const container =
@@ -787,65 +803,80 @@ function buildMiniPipelineElement() {
 
     container.className = "mini-pipeline";
 
-    const stageLabels = {
-        policy: "정책 검사",
-        payment: "결제",
-        execution: "AI 실행"
-    };
-
-    MINI_PIPELINE_STAGES.forEach((stageKey, index) => {
+    MINI_PIPELINE_STAGES.forEach((stage, stageIndex) => {
         const step =
-            document.createElement("div");
+            document.createElement("article");
 
         step.className = "mini-pipeline-step";
-        step.dataset.stage = stageKey;
+        step.dataset.stage = stage.key;
 
-        const dot =
+        const number =
+            document.createElement("div");
+
+        number.className = "mini-pipeline-number";
+        number.textContent =
+            String(stageIndex + 1);
+
+        const content =
+            document.createElement("div");
+
+        content.className = "mini-pipeline-content";
+
+        const title =
+            document.createElement("strong");
+
+        title.textContent = stage.title;
+
+        const description =
+            document.createElement("p");
+
+        description.textContent = stage.description;
+
+        content.appendChild(title);
+        content.appendChild(description);
+
+        const status =
             document.createElement("span");
 
-        dot.className = "mini-pipeline-dot";
+        status.className = "mini-pipeline-status";
+        status.textContent = "대기";
 
-        const label =
-            document.createElement("span");
-
-        label.className = "mini-pipeline-label";
-        label.textContent = stageLabels[stageKey];
-
-        step.appendChild(dot);
-        step.appendChild(label);
+        step.appendChild(number);
+        step.appendChild(content);
+        step.appendChild(status);
         container.appendChild(step);
-
-        if (index < MINI_PIPELINE_STAGES.length - 1) {
-            const connector =
-                document.createElement("div");
-
-            connector.className = "mini-pipeline-connector";
-            container.appendChild(connector);
-        }
     });
 
     return container;
 }
 
+function _miniPipelineStageIndex(stageKey) {
+    return MINI_PIPELINE_STAGES.findIndex(
+        (stage) => stage.key === stageKey
+    );
+}
+
 /* stageKey 이전 단계는 완료(done), stageKey는 진행 중(active)으로 표시한다. */
 function activateMiniPipelineStage(pipelineEl, stageKey) {
     const targetIndex =
-        MINI_PIPELINE_STAGES.indexOf(stageKey);
+        _miniPipelineStageIndex(stageKey);
 
     [...pipelineEl.querySelectorAll(".mini-pipeline-step")]
         .forEach((step, index) => {
             step.classList.remove("active", "done");
 
+            const status =
+                step.querySelector(".mini-pipeline-status");
+
             if (index < targetIndex) {
                 step.classList.add("done");
+                status.textContent = "완료";
             } else if (index === targetIndex) {
                 step.classList.add("active");
+                status.textContent = "진행 중";
+            } else {
+                status.textContent = "대기";
             }
-        });
-
-    [...pipelineEl.querySelectorAll(".mini-pipeline-connector")]
-        .forEach((connector, index) => {
-            connector.classList.toggle("done", index < targetIndex);
         });
 }
 
@@ -858,11 +889,9 @@ function activateMiniPipelineAll(pipelineEl) {
         .forEach((step) => {
             step.classList.remove("done");
             step.classList.add("active");
-        });
 
-    [...pipelineEl.querySelectorAll(".mini-pipeline-connector")]
-        .forEach((connector) => {
-            connector.classList.remove("done");
+            step.querySelector(".mini-pipeline-status")
+                .textContent = "진행 중";
         });
 }
 
@@ -871,11 +900,9 @@ function completeMiniPipeline(pipelineEl) {
         .forEach((step) => {
             step.classList.remove("active");
             step.classList.add("done");
-        });
 
-    [...pipelineEl.querySelectorAll(".mini-pipeline-connector")]
-        .forEach((connector) => {
-            connector.classList.add("done");
+            step.querySelector(".mini-pipeline-status")
+                .textContent = "완료";
         });
 }
 
