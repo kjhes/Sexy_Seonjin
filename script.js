@@ -89,6 +89,15 @@ const chainAnswersList =
 const statusMessage =
     document.getElementById("statusMessage");
 
+const miniPipeline =
+    document.getElementById("miniPipeline");
+
+const miniPipelineSteps =
+    [...document.querySelectorAll(".mini-pipeline-step")];
+
+const miniPipelineConnectors =
+    [...document.querySelectorAll(".mini-pipeline-connector")];
+
 
 const successResult =
     document.getElementById("successResult");
@@ -488,6 +497,9 @@ async function runSingleChainCall(
             : "AI가 목표를 분석하고 계획을 구성하는 중입니다..."
     );
 
+    showMiniPipeline();
+    activateMiniPipelineStage("policy");
+
     let transactionSignature = null;
 
     /*
@@ -556,6 +568,8 @@ async function runSingleChainCall(
         }
 
         appState.currentRequestId = prepared.request_id;
+
+        activateMiniPipelineStage("payment");
 
         // Never send an unsigned demo execution to a production backend.
         if (prepared.demo_mode === false && !shouldPayForReal) {
@@ -628,6 +642,14 @@ async function runSingleChainCall(
             ? "Agent Wallet이 정책 검사·결제·AI 실행을 자동으로 처리하는 중입니다..."
             : "결제를 검증하고 AI 답변을 생성하는 중입니다..."
     );
+
+    if (useAgentWallet) {
+        // 정책검사·결제·AI실행이 서버 쪽에서 한 번에 처리돼서 중간 단계를
+        // 구분해 알 수 없다 — 그래서 셋 다 동시에 진행 중으로 보여준다.
+        activateMiniPipelineAll();
+    } else {
+        activateMiniPipelineStage("execution");
+    }
 
     let response;
 
@@ -719,6 +741,8 @@ async function runSingleChainCall(
         return null;
     }
 
+    completeMiniPipeline();
+
     return data;
 }
 
@@ -737,6 +761,69 @@ function updateStatusMessage(text) {
 function hideStatusMessage() {
     statusMessage.classList.add("hidden");
     statusMessage.textContent = "";
+}
+
+
+/*
+    예전 7단계 파이프라인(요청분석/가격확인/정책검사/결제/온체인확인/API실행/
+    결과전달)을 "정책 검사 → 결제 → AI 실행" 3단계로 간추린 미니 진행 표시.
+    답변 카드가 붙기 직전까지 여기서 눈에 보이게 단계가 채워지고, 다 끝나면
+    카드가 나타난다 — 그래서 카드가 예고 없이 갑자기 튀어나오는 느낌을 줄인다.
+*/
+const MINI_PIPELINE_STAGES = ["policy", "payment", "execution"];
+
+function showMiniPipeline() {
+    miniPipeline.classList.remove("hidden");
+}
+
+function hideMiniPipeline() {
+    miniPipeline.classList.add("hidden");
+}
+
+/* stageKey 이전 단계는 완료(done), stageKey는 진행 중(active)으로 표시한다. */
+function activateMiniPipelineStage(stageKey) {
+    const targetIndex =
+        MINI_PIPELINE_STAGES.indexOf(stageKey);
+
+    miniPipelineSteps.forEach((step, index) => {
+        step.classList.remove("active", "done");
+
+        if (index < targetIndex) {
+            step.classList.add("done");
+        } else if (index === targetIndex) {
+            step.classList.add("active");
+        }
+    });
+
+    miniPipelineConnectors.forEach((connector, index) => {
+        connector.classList.toggle("done", index < targetIndex);
+    });
+}
+
+/*
+    Agent Wallet은 정책검사·결제·AI실행이 서버 안에서 한 번에 끝나서 중간
+    단계를 따로 구분할 수 없다 — 그래서 셋 다 동시에 "진행 중"으로 켠다.
+*/
+function activateMiniPipelineAll() {
+    miniPipelineSteps.forEach((step) => {
+        step.classList.remove("done");
+        step.classList.add("active");
+    });
+
+    miniPipelineConnectors.forEach((connector) => {
+        connector.classList.remove("done");
+    });
+}
+
+function completeMiniPipeline() {
+    miniPipelineSteps.forEach((step) => {
+        step.classList.remove("active");
+        step.classList.add("done");
+    });
+
+    miniPipelineConnectors.forEach((connector) => {
+        connector.classList.add("done");
+    });
 }
 
 
@@ -1261,6 +1348,7 @@ function hideAllResults() {
     errorResult.classList.add("hidden");
 
     hideStatusMessage();
+    hideMiniPipeline();
 }
 
 
