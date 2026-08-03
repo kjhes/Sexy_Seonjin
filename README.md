@@ -28,23 +28,37 @@ pip install -r requirements.txt
 
 ## 3. 환경변수 설정
 
-`.env.example`을 복사해서 `.env`를 만들고 값을 채운다.
+이 저장소에는 `.env` 파일이 없다 — 의도적으로 `.gitignore`에 등록해서 안 올린 것이다.
+`.env`에는 API 키·비밀값이 들어가서 공개 저장소에 올리면 안 되기 때문이다. 대신 어떤
+값이 필요한지만 적어둔 `.env.example`이 있으니, 이걸 복사해서 **자기 자신의** 키/값으로
+채운 `.env`를 각자 만들면 된다. 우리 팀의 실제 키가 없어도 아래 안내대로 자기 키를
+발급받아 채우면 로컬에서 완전히 재현·실행할 수 있다.
 
 ```bash
 cp .env.example .env
 ```
 
-| 변수 | 설명 |
-|---|---|
-| `SOLANA_WALLET_ADDRESS` | 결제 받는 Solana Devnet 지갑 주소 (`main.py`, `policy_server.py` 공통) |
-| `GEMINI_API_KEY` | Google AI Studio에서 발급 (https://aistudio.google.com/apikey). 레이어2 의미판단 + 실제 Gemini 호출에 사용 |
-| `POLICY_ENGINE_URL` | `policy_server.py`가 뜨는 주소 (기본 `http://localhost:8000`). `main.py`가 이 주소로 `/evaluate`를 호출함 |
-| `SOLANA_RPC_URL` | Solana Devnet RPC (온체인 USDC 잔액 조회용) |
-| `FACILITATOR_URL` | x402 결제 검증/정산 대행 서비스 |
-| `GEMINI_PRICE_USD` | Gemini 1회 호출당 청구 금액 |
-| `DEMO_MODE` | 프론트엔드용 `/execute` 엔드포인트 활성화 여부 (기본 `true`) |
-| `CORS_ORIGINS` | 프론트엔드(`index.html`)가 다른 포트에서 API를 호출할 수 있게 허용할 origin (기본 `*`) |
-| `POLICY_SHARED_SECRET` | `main.py`↔`policy_server.py` 간 인증용 공유 비밀키. **두 서버에 반드시 같은 값**을 넣어야 하고, 없으면 둘 다 시작을 거부함 (`main.py`, `policy_server.py` 공통) |
+### 최소로 필요한 것 (빠르게 돌려보고 싶다면)
+
+아래 3개만 채우면 두 서버가 뜨고 정책 판단 흐름을 바로 테스트할 수 있다(`DEMO_MODE=true`가
+기본값이라 실제 결제 없이도 동작함).
+
+1. `GEMINI_API_KEY` — Google AI Studio(https://aistudio.google.com/apikey)에서 **무료로** 발급
+2. `POLICY_SHARED_SECRET` — 아무 문자열이나 직접 만들어서 넣으면 됨(두 서버에 같은 값)
+3. `SOLANA_WALLET_ADDRESS` — Devnet 지갑 주소면 되고, 정책 판단만 테스트할 거면 충전 안 된 주소여도 무방
+
+| 변수 | 필수 여부 | 설명 |
+|---|---|---|
+| `GEMINI_API_KEY` | **필수** | Google AI Studio에서 발급(무료). 레이어2 의미판단 + 실제 Gemini 호출에 사용 |
+| `POLICY_SHARED_SECRET` | **필수** | `main.py`↔`policy_server.py` 간 인증용 공유 비밀키. 아무 문자열이나 직접 정하면 됨. **두 서버에 반드시 같은 값**을 넣어야 하고, 없으면 둘 다 시작을 거부함(fail-safe) |
+| `SOLANA_WALLET_ADDRESS` | **필수** | 결제 받는 Solana Devnet 지갑 주소 (`main.py`, `policy_server.py` 공통). Devnet 지갑은 [Phantom](https://phantom.app)에서 네트워크를 Devnet으로 바꾸고 새 지갑을 만들면 바로 얻을 수 있음 |
+| `POLICY_ENGINE_URL` | 선택(기본값 있음) | `policy_server.py`가 뜨는 주소 (기본 `http://localhost:8000`). `main.py`가 이 주소로 `/evaluate`를 호출함 |
+| `SOLANA_RPC_URL` | 선택(기본값 있음) | Solana Devnet RPC (온체인 USDC 잔액 조회용). 공식 공개 RPC가 기본값으로 이미 채워져 있음 |
+| `FACILITATOR_URL` | 선택(기본값 있음) | x402 결제 검증/정산 대행 서비스. 공식 테스트용 서비스가 기본값 |
+| `GEMINI_PRICE_USD` | 선택(기본값 있음) | Gemini 1회 호출당 청구 금액 |
+| `DEMO_MODE` | 선택(기본값 `true`) | `true`면 지갑 연결/결제 없이도 `/execute`가 정책 판단 흐름만 보여주는 데모 모드로 동작함 — 로컬에서 빠르게 확인할 때 유용 |
+| `CORS_ORIGINS` | 선택(기본값 `*`) | 프론트엔드(`index.html`)가 다른 포트에서 API를 호출할 수 있게 허용할 origin |
+| `AGENT_WALLET_PRIVATE_KEY` | 선택(비워둬도 됨) | Agent Wallet(자율 결제)용 개인키. 로컬에서는 비워두면 `agent_wallet.json` 파일로 자동 대체되니 안 채워도 실행에는 문제없음. 클라우드 배포 시에만 필요(재배포마다 파일시스템이 초기화되기 때문) |
 
 `GEMINI_API_KEY`가 없어도 `policy_server.py`는 뜨지만, `user_prompt`가 포함된 요청은
 전부 자동 거부(fail-safe)된다. `POLICY_SHARED_SECRET`이 없으면 아예 서버가 안 뜬다.
