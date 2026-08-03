@@ -109,6 +109,12 @@ python -m http.server 5500
 실제로 Phantom 서명 팝업이 뜨고, 승인하면 진짜 devnet USDC가 이동한다 (데모용으로 결제를
 건너뛰고 싶으면 지갑을 연결하지 않은 채로 실행 — `/execute`가 정책 판단만 보여주는 데모 모드로 대체됨).
 
+> **주의**: `index.html`을 위처럼 로컬 서버(`http://localhost:5500`)로 열지 않고 파일
+> 탐색기에서 더블클릭해서 `file://...`로 직접 열면, 브라우저 확장 프로그램(Phantom
+> 포함)이 `file://` 페이지에는 기본적으로 주입되지 않아서 지갑을 못 찾아 연결이 안 될
+> 수 있다. 반드시 `python -m http.server 5500` 같은 로컬 서버로 열어야 Phantom이
+> 정상적으로 인식된다.
+
 ## 7. Pay.sh 공식 CLI로 검증
 
 `main.py`는 x402 프로토콜을 표준대로 구현해서, Google Cloud × Solana Foundation의 공식 결제 CLI인
