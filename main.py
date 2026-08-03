@@ -592,7 +592,12 @@ def _consume_daily_gemini_quota() -> None:
 # @app.get("/health"): "GET /health 요청이 오면 바로 아래 함수를 실행해라"는 표시(데코레이터).
 # async def: 이 함수는 "비동기" 함수다. 네트워크 요청처럼 기다리는(await) 작업이 있을 때
 # 그 기다리는 동안 서버가 다른 요청도 같이 처리할 수 있게 해주는 파이썬 문법.
+#
+# GET뿐 아니라 HEAD도 받아준다 — UptimeRobot 같은 업타임 모니터는 서버 부하를
+# 줄이려고 기본적으로 HEAD로 찌르는데, FastAPI는 @app.get만 쓰면 HEAD를 자동으로
+# 얹어주지 않아서 405가 나 모니터가 계속 "Down"으로 오탐하는 문제가 있었다.
 @app.get("/health")
+@app.head("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "demo_mode": str(DEMO_MODE).lower()}
 
