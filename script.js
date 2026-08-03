@@ -419,22 +419,29 @@ async function executeUserRequest(goal) {
         const stagePlayback =
             playMiniPipelineStages(pipelineEl, pipelineCancelToken);
 
+        // runSingleChainCall이 실패하면 어느 단계(정책검사/결제/AI실행)에서
+        // 실패했는지를 여기에 직접 적어준다 — 장식용 타이머가 그 순간 어디
+        // 가있었는지로 추측하지 않고, 실제 실패 원인을 그대로 반영하기 위함.
+        const failureContext =
+            { stageIndex: null };
+
         const data = await runSingleChainCall(
             backendUrl,
             prompt,
             planSteps,
             planStepStatus,
-            stepNumber
+            stepNumber,
+            failureContext
         );
 
         if (data === null) {
             // runSingleChainCall이 이미 거절/오류 화면을 띄우고 중단한 경우.
-            // 연출 타이머를 멈추고, 지금 진행 중이던 단계를 실패(빨강)로
+            // 연출 타이머를 멈추고, 실제로 실패한 단계를 실패(빨강)로
             // 표시한다 — 안 그러면 타이머가 계속 혼자 돌다가 결국 초록으로
-            // 완료 표시를 해버려서, 결제가 실패/취소됐는데도 성공한 것처럼
-            // 보이는 문제가 있었다.
+            // 완료 표시를 해버리거나, 엉뚱한 단계가 빨갛게 표시되는 문제가
+            // 있었다.
             pipelineCancelToken.cancelled = true;
-            markMiniPipelineFailed(pipelineEl);
+            markMiniPipelineFailed(pipelineEl, failureContext.stageIndex);
             return;
         }
 
@@ -504,7 +511,8 @@ async function runSingleChainCall(
     prompt,
     planSteps,
     planStepStatus,
-    stepNumber
+    stepNumber,
+    failureContext
 ) {
     prepareProcess();
 
@@ -576,12 +584,14 @@ async function runSingleChainCall(
             );
             prepared = await prepareResponse.json();
             if (!prepareResponse.ok || prepared.approved === false) {
+                failureContext.stageIndex = 0; // 정책 검사
                 showRejectedResult(
                     prepared.reason || prepared.detail || "정책 검사에서 요청이 거절되었습니다."
                 );
                 return null;
             }
         } catch (error) {
+            failureContext.stageIndex = 0; // 정책 검사
             showSystemError(
                 "정책 사전 검사에 실패했습니다. 무료 서버 특성상 잠시 꺼져 있을 수 있으니 " +
                 "잠시 후 다시 시도해 주세요. 계속 안 되면 kjhes001@gmail.com 으로 문의해 주세요."
@@ -593,6 +603,7 @@ async function runSingleChainCall(
 
         // Never send an unsigned demo execution to a production backend.
         if (prepared.demo_mode === false && !shouldPayForReal) {
+            failureContext.stageIndex = 1; // 결제 (지갑 미연결이라 결제 불가)
             showSystemError(
                 "Connect Phantom and select Phantom payment to continue."
             );
@@ -611,6 +622,7 @@ async function runSingleChainCall(
             } catch (error) {
                 console.error(error);
 
+                failureContext.stageIndex = 1; // 결제 (서명 취소·실패)
                 showSystemError(
                     stepNumber > 1
                         ? `${stepNumber}단계 결제 중 오류: ${error.message || "지갑 결제에 실패했습니다."}`
@@ -621,6 +633,7 @@ async function runSingleChainCall(
             }
 
             if (prepared.demo_mode === false && !transactionSignature) {
+                failureContext.stageIndex = 1; // 결제
                 showSystemError(
                     "The execution request was stopped because no payment signature was returned."
                 );
@@ -685,6 +698,7 @@ async function runSingleChainCall(
         );
 
     } catch (error) {
+        failureContext.stageIndex = 2; // AI 실행 (결제검증+실행이 합쳐진 마지막 호출)
         showSystemError(
             "백엔드 서버에 연결할 수 없습니다. 무료 서버 특성상 잠시 꺼져 있을 수 있으니 " +
             "잠시 후 다시 시도해 주세요. 계속 안 되면 kjhes001@gmail.com 으로 문의해 주세요."
@@ -700,6 +714,7 @@ async function runSingleChainCall(
         data = await response.json();
 
     } catch (error) {
+        failureContext.stageIndex = 2; // AI 실행
         showSystemError(
             "서버 응답 형식이 올바르지 않습니다."
         );
@@ -714,6 +729,12 @@ async function runSingleChainCall(
             data.detail ||
             data.message ||
             `서버 요청이 실패했습니다. HTTP ${response.status}`;
+
+        failureContext.stageIndex =
+            miniPipelineStageIndexFromRejectedStage(
+                data.rejected_stage,
+                2 // rejected_stage가 없으면 보통 502(Gemini 실행 실패) 케이스
+            );
 
         if (
             response.status === 403 ||
@@ -744,6 +765,9 @@ async function runSingleChainCall(
         data.approved === false ||
         data.status === "rejected"
     ) {
+        failureContext.stageIndex =
+            miniPipelineStageIndexFromRejectedStage(data.rejected_stage);
+
         showRejectedResult(
             stepNumber > 1
                 ? `${stepNumber}단계에서 거부됨: ${data.reason || "정책 검사에서 요청이 거절되었습니다."}`
@@ -860,22 +884,64 @@ function completeMiniPipeline(pipelineEl) {
     남기고 "지금 진행 중이던 단계"만 실패(빨강)로 표시한다. 그 뒤 단계는 아예
     시작도 안 했으니 대기 상태 그대로 둔다.
 */
-function markMiniPipelineFailed(pipelineEl) {
+function markMiniPipelineFailed(pipelineEl, stageIndex) {
     const steps =
         [...pipelineEl.querySelectorAll(".mini-pipeline-step")];
 
-    const activeIndex =
-        steps.findIndex((step) => step.classList.contains("active"));
+    // stageIndex를 안 넘겼을 때만(예상 못한 실패) 타이머가 지금 가있는
+    // 자리를 대신 쓴다 — 원래는 실제로 실패한 단계를 호출부가 정확히
+    // 알려주는 게 정상 경로다(아래 _classifyFailureStage 참고).
+    let failIndex = stageIndex;
 
-    const failIndex =
-        activeIndex === -1 ? 0 : activeIndex;
+    if (failIndex === null || failIndex === undefined) {
+        const activeIndex =
+            steps.findIndex((step) => step.classList.contains("active"));
+
+        failIndex = activeIndex === -1 ? 0 : activeIndex;
+    }
 
     steps.forEach((step, index) => {
-        if (index === failIndex) {
-            step.classList.remove("active", "done");
+        step.classList.remove("active");
+
+        if (index < failIndex) {
+            // 실제로 실패한 단계보다 앞선 단계는 정말로 통과된 것이므로
+            // 완료(초록)로 남긴다.
+            step.classList.add("done");
+        } else if (index === failIndex) {
+            step.classList.remove("done");
             step.classList.add("failed");
         }
     });
+}
+
+
+/*
+    /execute/prepare, 지갑 서명, 최종 /execute 응답 중 어디서 실패했는지를
+    보고, 미니 파이프라인의 어느 단계(0=정책검사, 1=결제, 2=AI실행)를 빨간색으로
+    표시할지 정한다. 백엔드가 rejected_stage를 안 준 경우(네트워크 오류 등)만
+    기본값을 쓴다.
+*/
+function miniPipelineStageIndexFromRejectedStage(rejectedStage, fallbackIndex = 0) {
+    if (rejectedStage === "payment" || rejectedStage === "onchain_confirmation") {
+        return 1;
+    }
+
+    if (rejectedStage === "api_execution" || rejectedStage === "result_delivery") {
+        return 2;
+    }
+
+    if (
+        rejectedStage === "policy_check" ||
+        rejectedStage === "request_analysis" ||
+        rejectedStage === "price_check"
+    ) {
+        return 0;
+    }
+
+    // 백엔드가 rejected_stage를 안 준 경우 — 보통 502(Gemini 실행 실패)처럼
+    // 정책/결제는 이미 통과한 뒤에 실패한 경우라, 호출부가 맥락에 맞는
+    // 기본값을 넘겨준다.
+    return fallbackIndex;
 }
 
 /*
