@@ -409,12 +409,15 @@ async function executeUserRequest(goal) {
             block: "nearest"
         });
 
-        // 실제 요청과 별개로 이 연출(최소 9초)을 동시에 돌린다. 실제 응답이
+        // 실제 요청과 별개로 이 연출(최소 4.5초)을 동시에 돌린다. 실제 응답이
         // 이보다 빨리 와도(특히 Agent Wallet), 이 연출이 끝날 때까지는
         // 카드를 보여주지 않는다 — 그래야 매번 단계별로 색이 순서대로
         // 들어오는 걸 눈으로 볼 수 있다.
+        const pipelineCancelToken =
+            { cancelled: false };
+
         const stagePlayback =
-            playMiniPipelineStages(pipelineEl);
+            playMiniPipelineStages(pipelineEl, pipelineCancelToken);
 
         const data = await runSingleChainCall(
             backendUrl,
@@ -425,7 +428,13 @@ async function executeUserRequest(goal) {
         );
 
         if (data === null) {
-            // runSingleChainCall이 이미 거절/오류 화면을 띄우고 중단한 경우
+            // runSingleChainCall이 이미 거절/오류 화면을 띄우고 중단한 경우.
+            // 연출 타이머를 멈추고, 지금 진행 중이던 단계를 실패(빨강)로
+            // 표시한다 — 안 그러면 타이머가 계속 혼자 돌다가 결국 초록으로
+            // 완료 표시를 해버려서, 결제가 실패/취소됐는데도 성공한 것처럼
+            // 보이는 문제가 있었다.
+            pipelineCancelToken.cancelled = true;
+            markMiniPipelineFailed(pipelineEl);
             return;
         }
 
@@ -847,17 +856,48 @@ function completeMiniPipeline(pipelineEl) {
 }
 
 /*
+    결제 취소·정책 거절 등으로 실패했을 때, 지금까지 지나온 단계는 완료(초록)로
+    남기고 "지금 진행 중이던 단계"만 실패(빨강)로 표시한다. 그 뒤 단계는 아예
+    시작도 안 했으니 대기 상태 그대로 둔다.
+*/
+function markMiniPipelineFailed(pipelineEl) {
+    const steps =
+        [...pipelineEl.querySelectorAll(".mini-pipeline-step")];
+
+    const activeIndex =
+        steps.findIndex((step) => step.classList.contains("active"));
+
+    const failIndex =
+        activeIndex === -1 ? 0 : activeIndex;
+
+    steps.forEach((step, index) => {
+        if (index === failIndex) {
+            step.classList.remove("active", "done");
+            step.classList.add("failed");
+        }
+    });
+}
+
+/*
     단계를 하나씩 최소 1.5초씩 순서대로 켜는 연출용 타이머. 실제 처리
     속도와 무관하게 독립적으로 돌아간다 — 실제 요청이 이보다 빨리 끝나도
     이 재생이 끝날 때까지는 카드를 보여주지 않아서, 매번 최소 4.5초 동안은
     색이 순서대로 들어오는 걸 볼 수 있다.
+
+    cancelToken.cancelled를 true로 만들면 다음 단계로 안 넘어가고 멈춘다 —
+    실제 요청이 실패했을 때 이 타이머가 계속 혼자 돌면서 나중에 실패 표시를
+    덮어써버리는 걸 막기 위함이다.
 */
-async function playMiniPipelineStages(pipelineEl) {
+async function playMiniPipelineStages(pipelineEl, cancelToken) {
     for (
         let stageIndex = 0;
         stageIndex < MINI_PIPELINE_STAGES.length;
         stageIndex += 1
     ) {
+        if (cancelToken.cancelled) {
+            return;
+        }
+
         activateMiniPipelineStage(pipelineEl, stageIndex);
         await sleep(MINI_PIPELINE_STAGE_DURATION_MS);
     }

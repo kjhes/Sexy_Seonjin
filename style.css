@@ -238,6 +238,11 @@ button:disabled {
     background: var(--success-soft);
 }
 
+.mini-pipeline-step.failed {
+    border-color: rgba(214, 95, 104, 0.35);
+    background: var(--danger-soft);
+}
+
 .mini-pipeline-number {
     width: 38px;
     height: 38px;
@@ -265,6 +270,11 @@ button:disabled {
     color: white;
 }
 
+.mini-pipeline-step.failed .mini-pipeline-number {
+    background: var(--danger);
+    color: white;
+}
+
 .mini-pipeline-title {
     font-size: 14px;
     font-weight: 800;
@@ -278,6 +288,10 @@ button:disabled {
 
 .mini-pipeline-step.done .mini-pipeline-title {
     color: var(--success);
+}
+
+.mini-pipeline-step.failed .mini-pipeline-title {
+    color: var(--danger);
 }
 
 @media (max-width: 640px) {
