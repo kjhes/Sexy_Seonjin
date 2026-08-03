@@ -89,15 +89,6 @@ const chainAnswersList =
 const statusMessage =
     document.getElementById("statusMessage");
 
-const miniPipeline =
-    document.getElementById("miniPipeline");
-
-const miniPipelineSteps =
-    [...document.querySelectorAll(".mini-pipeline-step")];
-
-const miniPipelineConnectors =
-    [...document.querySelectorAll(".mini-pipeline-connector")];
-
 
 const successResult =
     document.getElementById("successResult");
@@ -403,12 +394,28 @@ async function executeUserRequest(goal) {
             planStepStatus
         );
 
+        // 이번 호출의 진행 과정(정책검사→결제→AI실행)을 먼저 답변 목록에
+        // 꽂아 넣는다 — 답변이 오기 전부터 여기서 진행 상황이 보이고,
+        // 끝나면 이 파이프라인 바로 아래에 그 답변 카드가 이어진다.
+        chainAnswers.classList.remove("hidden");
+
+        const pipelineEl =
+            buildMiniPipelineElement();
+
+        chainAnswersList.appendChild(pipelineEl);
+
+        pipelineEl.scrollIntoView({
+            behavior: "smooth",
+            block: "nearest"
+        });
+
         const data = await runSingleChainCall(
             backendUrl,
             prompt,
             planSteps,
             planStepStatus,
-            stepNumber
+            stepNumber,
+            pipelineEl
         );
 
         if (data === null) {
@@ -479,7 +486,8 @@ async function runSingleChainCall(
     prompt,
     planSteps,
     planStepStatus,
-    stepNumber
+    stepNumber,
+    pipelineEl
 ) {
     prepareProcess();
 
@@ -497,8 +505,7 @@ async function runSingleChainCall(
             : "AI가 목표를 분석하고 계획을 구성하는 중입니다..."
     );
 
-    showMiniPipeline();
-    activateMiniPipelineStage("policy");
+    activateMiniPipelineStage(pipelineEl, "policy");
 
     let transactionSignature = null;
 
@@ -569,7 +576,7 @@ async function runSingleChainCall(
 
         appState.currentRequestId = prepared.request_id;
 
-        activateMiniPipelineStage("payment");
+        activateMiniPipelineStage(pipelineEl, "payment");
 
         // Never send an unsigned demo execution to a production backend.
         if (prepared.demo_mode === false && !shouldPayForReal) {
@@ -646,9 +653,9 @@ async function runSingleChainCall(
     if (useAgentWallet) {
         // 정책검사·결제·AI실행이 서버 쪽에서 한 번에 처리돼서 중간 단계를
         // 구분해 알 수 없다 — 그래서 셋 다 동시에 진행 중으로 보여준다.
-        activateMiniPipelineAll();
+        activateMiniPipelineAll(pipelineEl);
     } else {
-        activateMiniPipelineStage("execution");
+        activateMiniPipelineStage(pipelineEl, "execution");
     }
 
     let response;
@@ -741,7 +748,7 @@ async function runSingleChainCall(
         return null;
     }
 
-    completeMiniPipeline();
+    completeMiniPipeline(pipelineEl);
 
     return data;
 }
@@ -767,63 +774,109 @@ function hideStatusMessage() {
 /*
     예전 7단계 파이프라인(요청분석/가격확인/정책검사/결제/온체인확인/API실행/
     결과전달)을 "정책 검사 → 결제 → AI 실행" 3단계로 간추린 미니 진행 표시.
-    답변 카드가 붙기 직전까지 여기서 눈에 보이게 단계가 채워지고, 다 끝나면
-    카드가 나타난다 — 그래서 카드가 예고 없이 갑자기 튀어나오는 느낌을 줄인다.
+
+    호출마다 새 파이프라인 엘리먼트를 만들어서 "그 답변 카드 바로 위"에
+    꽂아 넣는다 — 그래서 체인이 길어져 카드가 여러 개 쌓여도, 각 카드마다
+    자기 바로 위에 그 카드가 나오기까지의 진행 과정이 그대로 남는다.
 */
 const MINI_PIPELINE_STAGES = ["policy", "payment", "execution"];
 
-function showMiniPipeline() {
-    miniPipeline.classList.remove("hidden");
-}
+function buildMiniPipelineElement() {
+    const container =
+        document.createElement("div");
 
-function hideMiniPipeline() {
-    miniPipeline.classList.add("hidden");
-}
+    container.className = "mini-pipeline";
 
-/* stageKey 이전 단계는 완료(done), stageKey는 진행 중(active)으로 표시한다. */
-function activateMiniPipelineStage(stageKey) {
-    const targetIndex =
-        MINI_PIPELINE_STAGES.indexOf(stageKey);
+    const stageLabels = {
+        policy: "정책 검사",
+        payment: "결제",
+        execution: "AI 실행"
+    };
 
-    miniPipelineSteps.forEach((step, index) => {
-        step.classList.remove("active", "done");
+    MINI_PIPELINE_STAGES.forEach((stageKey, index) => {
+        const step =
+            document.createElement("div");
 
-        if (index < targetIndex) {
-            step.classList.add("done");
-        } else if (index === targetIndex) {
-            step.classList.add("active");
+        step.className = "mini-pipeline-step";
+        step.dataset.stage = stageKey;
+
+        const dot =
+            document.createElement("span");
+
+        dot.className = "mini-pipeline-dot";
+
+        const label =
+            document.createElement("span");
+
+        label.className = "mini-pipeline-label";
+        label.textContent = stageLabels[stageKey];
+
+        step.appendChild(dot);
+        step.appendChild(label);
+        container.appendChild(step);
+
+        if (index < MINI_PIPELINE_STAGES.length - 1) {
+            const connector =
+                document.createElement("div");
+
+            connector.className = "mini-pipeline-connector";
+            container.appendChild(connector);
         }
     });
 
-    miniPipelineConnectors.forEach((connector, index) => {
-        connector.classList.toggle("done", index < targetIndex);
-    });
+    return container;
+}
+
+/* stageKey 이전 단계는 완료(done), stageKey는 진행 중(active)으로 표시한다. */
+function activateMiniPipelineStage(pipelineEl, stageKey) {
+    const targetIndex =
+        MINI_PIPELINE_STAGES.indexOf(stageKey);
+
+    [...pipelineEl.querySelectorAll(".mini-pipeline-step")]
+        .forEach((step, index) => {
+            step.classList.remove("active", "done");
+
+            if (index < targetIndex) {
+                step.classList.add("done");
+            } else if (index === targetIndex) {
+                step.classList.add("active");
+            }
+        });
+
+    [...pipelineEl.querySelectorAll(".mini-pipeline-connector")]
+        .forEach((connector, index) => {
+            connector.classList.toggle("done", index < targetIndex);
+        });
 }
 
 /*
     Agent Wallet은 정책검사·결제·AI실행이 서버 안에서 한 번에 끝나서 중간
     단계를 따로 구분할 수 없다 — 그래서 셋 다 동시에 "진행 중"으로 켠다.
 */
-function activateMiniPipelineAll() {
-    miniPipelineSteps.forEach((step) => {
-        step.classList.remove("done");
-        step.classList.add("active");
-    });
+function activateMiniPipelineAll(pipelineEl) {
+    [...pipelineEl.querySelectorAll(".mini-pipeline-step")]
+        .forEach((step) => {
+            step.classList.remove("done");
+            step.classList.add("active");
+        });
 
-    miniPipelineConnectors.forEach((connector) => {
-        connector.classList.remove("done");
-    });
+    [...pipelineEl.querySelectorAll(".mini-pipeline-connector")]
+        .forEach((connector) => {
+            connector.classList.remove("done");
+        });
 }
 
-function completeMiniPipeline() {
-    miniPipelineSteps.forEach((step) => {
-        step.classList.remove("active");
-        step.classList.add("done");
-    });
+function completeMiniPipeline(pipelineEl) {
+    [...pipelineEl.querySelectorAll(".mini-pipeline-step")]
+        .forEach((step) => {
+            step.classList.remove("active");
+            step.classList.add("done");
+        });
 
-    miniPipelineConnectors.forEach((connector) => {
-        connector.classList.add("done");
-    });
+    [...pipelineEl.querySelectorAll(".mini-pipeline-connector")]
+        .forEach((connector) => {
+            connector.classList.add("done");
+        });
 }
 
 
@@ -1348,7 +1401,6 @@ function hideAllResults() {
     errorResult.classList.add("hidden");
 
     hideStatusMessage();
-    hideMiniPipeline();
 }
 
 

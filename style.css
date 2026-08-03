@@ -200,7 +200,7 @@ button:disabled {
 */
 .mini-pipeline {
     margin-top: 14px;
-    padding: 14px 18px;
+    padding: 12px 18px;
 
     display: flex;
     align-items: center;
@@ -209,7 +209,14 @@ button:disabled {
     background: var(--background);
 
     border: 1px solid var(--border);
-    border-radius: 14px;
+    border-radius: 14px 14px 0 0;
+}
+
+/* 파이프라인 바로 다음 카드는 "이 진행 과정의 결과"라는 게 보이도록 붙여준다. */
+.mini-pipeline + .chain-answer-item {
+    margin-top: 0;
+    border-top: none;
+    border-radius: 0 0 14px 14px;
 }
 
 .mini-pipeline-step {
