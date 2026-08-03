@@ -202,17 +202,18 @@ button:disabled {
     margin-top: 14px;
     margin-bottom: 11px;
 
-    display: grid;
+    display: flex;
     gap: 11px;
 }
 
 .mini-pipeline-step {
+    flex: 1;
     padding: 15px;
 
     display: grid;
-    grid-template-columns: 42px 1fr auto;
+    grid-template-columns: 38px 1fr;
     align-items: center;
-    gap: 14px;
+    gap: 12px;
 
     border: 1px solid var(--border);
     border-radius: 17px;
@@ -250,6 +251,8 @@ button:disabled {
     color: var(--text-light);
 
     font-weight: 900;
+
+    transition: background 0.25s ease, color 0.25s ease;
 }
 
 .mini-pipeline-step.active .mini-pipeline-number {
@@ -262,41 +265,24 @@ button:disabled {
     color: white;
 }
 
-.mini-pipeline-content strong {
-    display: block;
-
+.mini-pipeline-title {
     font-size: 14px;
-}
-
-.mini-pipeline-content p {
-    margin-top: 1px;
-
-    color: var(--text-light);
-    font-size: 13px;
-}
-
-.mini-pipeline-status {
-    color: var(--text-light);
-
-    font-size: 13px;
     font-weight: 800;
+
+    transition: color 0.25s ease;
 }
 
-.mini-pipeline-step.active .mini-pipeline-status {
+.mini-pipeline-step.active .mini-pipeline-title {
     color: var(--primary-dark);
 }
 
-.mini-pipeline-step.done .mini-pipeline-status {
+.mini-pipeline-step.done .mini-pipeline-title {
     color: var(--success);
 }
 
 @media (max-width: 640px) {
-    .mini-pipeline-step {
-        grid-template-columns: 38px 1fr;
-    }
-
-    .mini-pipeline-status {
-        grid-column: 2;
+    .mini-pipeline {
+        flex-direction: column;
     }
 }
 

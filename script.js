@@ -409,19 +409,28 @@ async function executeUserRequest(goal) {
             block: "nearest"
         });
 
+        // 실제 요청과 별개로 이 연출(최소 9초)을 동시에 돌린다. 실제 응답이
+        // 이보다 빨리 와도(특히 Agent Wallet), 이 연출이 끝날 때까지는
+        // 카드를 보여주지 않는다 — 그래야 매번 단계별로 색이 순서대로
+        // 들어오는 걸 눈으로 볼 수 있다.
+        const stagePlayback =
+            playMiniPipelineStages(pipelineEl);
+
         const data = await runSingleChainCall(
             backendUrl,
             prompt,
             planSteps,
             planStepStatus,
-            stepNumber,
-            pipelineEl
+            stepNumber
         );
 
         if (data === null) {
             // runSingleChainCall이 이미 거절/오류 화면을 띄우고 중단한 경우
             return;
         }
+
+        await stagePlayback;
+        completeMiniPipeline(pipelineEl);
 
         lastData = data;
         totalAmount += Number(data.amount ?? 0);
@@ -486,8 +495,7 @@ async function runSingleChainCall(
     prompt,
     planSteps,
     planStepStatus,
-    stepNumber,
-    pipelineEl
+    stepNumber
 ) {
     prepareProcess();
 
@@ -504,8 +512,6 @@ async function runSingleChainCall(
             ? `${stepNumber}/${planSteps.length}단계 진행 중입니다: ${planSteps[stepNumber - 1] || "다음 단계"}...`
             : "AI가 목표를 분석하고 계획을 구성하는 중입니다..."
     );
-
-    activateMiniPipelineStage(pipelineEl, "policy");
 
     let transactionSignature = null;
 
@@ -575,8 +581,6 @@ async function runSingleChainCall(
         }
 
         appState.currentRequestId = prepared.request_id;
-
-        activateMiniPipelineStage(pipelineEl, "payment");
 
         // Never send an unsigned demo execution to a production backend.
         if (prepared.demo_mode === false && !shouldPayForReal) {
@@ -649,14 +653,6 @@ async function runSingleChainCall(
             ? "Agent Wallet이 정책 검사·결제·AI 실행을 자동으로 처리하는 중입니다..."
             : "결제를 검증하고 AI 답변을 생성하는 중입니다..."
     );
-
-    if (useAgentWallet) {
-        // 정책검사·결제·AI실행이 서버 쪽에서 한 번에 처리돼서 중간 단계를
-        // 구분해 알 수 없다 — 그래서 셋 다 동시에 진행 중으로 보여준다.
-        activateMiniPipelineAll(pipelineEl);
-    } else {
-        activateMiniPipelineStage(pipelineEl, "execution");
-    }
 
     let response;
 
@@ -748,8 +744,6 @@ async function runSingleChainCall(
         return null;
     }
 
-    completeMiniPipeline(pipelineEl);
-
     return data;
 }
 
@@ -772,30 +766,29 @@ function hideStatusMessage() {
 
 
 /*
-    예전에 쓰던 7단계 파이프라인(번호 원 + 제목/설명 + 상태 텍스트) UI를
-    그대로 재사용하되, "정책 검사 → 결제 → AI 실행" 3단계로 간추렸다.
+    예전 세로 3단계 파이프라인(번호 원 + 제목, 상태별 색 전환)과 똑같은
+    박스 디자인을 그대로 쓰되, 세로로 쌓지 않고 가로로 나란히 배치한다.
 
     호출마다 새 파이프라인 엘리먼트를 만들어서 "그 답변 카드 바로 위"에
     꽂아 넣는다 — 그래서 체인이 길어져 카드가 여러 개 쌓여도, 각 카드마다
     자기 바로 위에 그 카드가 나오기까지의 진행 과정이 그대로 남는다.
+
+    실제 백엔드 처리 속도(특히 Agent Wallet은 서버가 한 번에 다 처리해서
+    몇백ms만에 끝나기도 함)와 무관하게, 단계마다 최소 1.5초는 눈에 보이도록
+    연출한다 — 그래서 실제 완료 여부와 별개로 애니메이션을 타이머로 직접
+    재생하고, 둘 다(실제 데이터 + 연출) 끝난 뒤에야 카드를 보여준다.
 */
 const MINI_PIPELINE_STAGES = [
-    {
-        key: "policy",
-        title: "정책 검사",
-        description: "결제 한도·범위·이상 패턴을 검사합니다."
-    },
-    {
-        key: "payment",
-        title: "결제",
-        description: "Solana Devnet USDC 결제를 처리합니다."
-    },
-    {
-        key: "execution",
-        title: "AI 실행",
-        description: "Gemini가 답변을 생성합니다."
-    }
+    { key: "policy", title: "정책 검사" },
+    { key: "payment", title: "결제" },
+    { key: "execution", title: "AI 실행" }
 ];
+
+const MINI_PIPELINE_STAGE_DURATION_MS = 1500;
+
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function buildMiniPipelineElement() {
     const container =
@@ -805,7 +798,7 @@ function buildMiniPipelineElement() {
 
     MINI_PIPELINE_STAGES.forEach((stage, stageIndex) => {
         const step =
-            document.createElement("article");
+            document.createElement("div");
 
         step.className = "mini-pipeline-step";
         step.dataset.stage = stage.key;
@@ -817,81 +810,31 @@ function buildMiniPipelineElement() {
         number.textContent =
             String(stageIndex + 1);
 
-        const content =
-            document.createElement("div");
-
-        content.className = "mini-pipeline-content";
-
         const title =
-            document.createElement("strong");
-
-        title.textContent = stage.title;
-
-        const description =
-            document.createElement("p");
-
-        description.textContent = stage.description;
-
-        content.appendChild(title);
-        content.appendChild(description);
-
-        const status =
             document.createElement("span");
 
-        status.className = "mini-pipeline-status";
-        status.textContent = "대기";
+        title.className = "mini-pipeline-title";
+        title.textContent = stage.title;
 
         step.appendChild(number);
-        step.appendChild(content);
-        step.appendChild(status);
+        step.appendChild(title);
         container.appendChild(step);
     });
 
     return container;
 }
 
-function _miniPipelineStageIndex(stageKey) {
-    return MINI_PIPELINE_STAGES.findIndex(
-        (stage) => stage.key === stageKey
-    );
-}
-
-/* stageKey 이전 단계는 완료(done), stageKey는 진행 중(active)으로 표시한다. */
-function activateMiniPipelineStage(pipelineEl, stageKey) {
-    const targetIndex =
-        _miniPipelineStageIndex(stageKey);
-
+/* stageIndex 이전 단계는 완료(done), stageIndex는 진행 중(active)으로 표시한다. */
+function activateMiniPipelineStage(pipelineEl, stageIndex) {
     [...pipelineEl.querySelectorAll(".mini-pipeline-step")]
         .forEach((step, index) => {
             step.classList.remove("active", "done");
 
-            const status =
-                step.querySelector(".mini-pipeline-status");
-
-            if (index < targetIndex) {
+            if (index < stageIndex) {
                 step.classList.add("done");
-                status.textContent = "완료";
-            } else if (index === targetIndex) {
+            } else if (index === stageIndex) {
                 step.classList.add("active");
-                status.textContent = "진행 중";
-            } else {
-                status.textContent = "대기";
             }
-        });
-}
-
-/*
-    Agent Wallet은 정책검사·결제·AI실행이 서버 안에서 한 번에 끝나서 중간
-    단계를 따로 구분할 수 없다 — 그래서 셋 다 동시에 "진행 중"으로 켠다.
-*/
-function activateMiniPipelineAll(pipelineEl) {
-    [...pipelineEl.querySelectorAll(".mini-pipeline-step")]
-        .forEach((step) => {
-            step.classList.remove("done");
-            step.classList.add("active");
-
-            step.querySelector(".mini-pipeline-status")
-                .textContent = "진행 중";
         });
 }
 
@@ -900,10 +843,24 @@ function completeMiniPipeline(pipelineEl) {
         .forEach((step) => {
             step.classList.remove("active");
             step.classList.add("done");
-
-            step.querySelector(".mini-pipeline-status")
-                .textContent = "완료";
         });
+}
+
+/*
+    단계를 하나씩 최소 1.5초씩 순서대로 켜는 연출용 타이머. 실제 처리
+    속도와 무관하게 독립적으로 돌아간다 — 실제 요청이 이보다 빨리 끝나도
+    이 재생이 끝날 때까지는 카드를 보여주지 않아서, 매번 최소 4.5초 동안은
+    색이 순서대로 들어오는 걸 볼 수 있다.
+*/
+async function playMiniPipelineStages(pipelineEl) {
+    for (
+        let stageIndex = 0;
+        stageIndex < MINI_PIPELINE_STAGES.length;
+        stageIndex += 1
+    ) {
+        activateMiniPipelineStage(pipelineEl, stageIndex);
+        await sleep(MINI_PIPELINE_STAGE_DURATION_MS);
+    }
 }
 
 
