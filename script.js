@@ -586,7 +586,11 @@ async function runSingleChainCall(
             if (!prepareResponse.ok || prepared.approved === false) {
                 failureContext.stageIndex = 0; // 정책 검사
                 showRejectedResult(
-                    prepared.reason || prepared.detail || "정책 검사에서 요청이 거절되었습니다."
+                    buildRejectionMessage(
+                        stepNumber,
+                        prepared.policy_check,
+                        prepared.reason || prepared.detail || "정책 검사에서 요청이 거절되었습니다."
+                    )
                 );
                 return null;
             }
@@ -742,9 +746,7 @@ async function runSingleChainCall(
             data.status === "rejected"
         ) {
             showRejectedResult(
-                stepNumber > 1
-                    ? `${stepNumber}단계에서 거부됨: ${message}`
-                    : message
+                buildRejectionMessage(stepNumber, data.policy_check, message)
             );
 
             return null;
@@ -769,9 +771,11 @@ async function runSingleChainCall(
             miniPipelineStageIndexFromRejectedStage(data.rejected_stage);
 
         showRejectedResult(
-            stepNumber > 1
-                ? `${stepNumber}단계에서 거부됨: ${data.reason || "정책 검사에서 요청이 거절되었습니다."}`
-                : data.reason || "정책 검사에서 요청이 거절되었습니다."
+            buildRejectionMessage(
+                stepNumber,
+                data.policy_check,
+                data.reason || "정책 검사에서 요청이 거절되었습니다."
+            )
         );
 
         return null;
@@ -943,6 +947,72 @@ function miniPipelineStageIndexFromRejectedStage(rejectedStage, fallbackIndex = 
     // 기본값을 넘겨준다.
     return fallbackIndex;
 }
+
+
+/*
+    거절 사유를 "몇 번째 호출"이 아니라 "Layer 1(하드 규칙)"과 "Layer 2(AI 의미
+    판단)" 중 어디서 막혔는지로 보여준다. 예전엔 "2단계에서 거부됨"이라고만
+    써서, 미니 파이프라인의 "2. 결제" 칸에서 막힌 것처럼 오해하기 쉬웠다 —
+    실제로는 체인의 몇 번째 호출인지와 정책 판단 레이어는 서로 다른 축이라
+    분리해서 보여준다.
+*/
+const LAYER1_FAIL_CODES = new Set([
+    "category_fail",
+    "api_not_registered_fail",
+    "wallet_not_connected_fail",
+    "insufficient_balance_fail",
+    "recipient_mismatch_fail",
+    "rate_limit_fail",
+    "ai_repeated_failure_fail",
+    "missing_permission_fail",
+    "infra_unstable_fail",
+    "per_tx_limit_fail",
+    "daily_limit_fail",
+    "call_count_fail",
+    "duplicate_request_fail"
+]);
+
+const LAYER2_FAIL_CODES = new Set([
+    "out_of_scope_fail",
+    "prompt_injection_fail",
+    "sensitive_info_fail",
+    "unclear_goal_fail"
+]);
+
+function describePolicyLayer(policyCheck) {
+    if (!Array.isArray(policyCheck)) {
+        return null;
+    }
+
+    if (
+        policyCheck.some((code) => LAYER2_FAIL_CODES.has(code))
+    ) {
+        return "Layer 2(AI 의미 판단)";
+    }
+
+    if (
+        policyCheck.some((code) => LAYER1_FAIL_CODES.has(code))
+    ) {
+        return "Layer 1(하드 규칙)";
+    }
+
+    return null;
+}
+
+function buildRejectionMessage(stepNumber, policyCheck, reason) {
+    const layerLabel =
+        describePolicyLayer(policyCheck);
+
+    const hopLabel =
+        stepNumber > 1 ? `${stepNumber}차 호출 · ` : "";
+
+    if (!layerLabel) {
+        return hopLabel ? `${hopLabel}거부: ${reason}` : reason;
+    }
+
+    return `${hopLabel}${layerLabel} 거부: ${reason}`;
+}
+
 
 /*
     단계를 하나씩 최소 1.5초씩 순서대로 켜는 연출용 타이머. 실제 처리
